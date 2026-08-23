@@ -46,6 +46,11 @@ class Settings:
     allow_writes: bool = False
     write_chat_allowlist: frozenset[int] | None = None
     audit_log_path: Path | None = None
+    session_string: str | None = None
+
+    @property
+    def session_mode(self) -> str:
+        return "string" if self.session_string else "file"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -62,10 +67,14 @@ class Settings:
         except ValueError as exc:
             raise ConfigurationError("TELEGRAM_API_ID must be an integer") from exc
 
+        session_string_raw = os.getenv("TELEGRAM_SESSION_STRING")
+        session_string = session_string_raw.strip() if session_string_raw else None
+
         session_path = Path(
             os.getenv("TELEGRAM_SESSION_PATH", ".telegram/codex")
         ).expanduser()
-        session_path.parent.mkdir(parents=True, exist_ok=True)
+        if session_string is None:
+            session_path.parent.mkdir(parents=True, exist_ok=True)
 
         audit_raw = os.getenv("TELEGRAM_AUDIT_LOG_PATH", ".telegram/audit.jsonl")
         if audit_raw.strip().lower() in _AUDIT_OFF_VALUES:
@@ -84,4 +93,5 @@ class Settings:
                 os.getenv("TELEGRAM_WRITE_CHAT_ALLOWLIST")
             ),
             audit_log_path=audit_log_path,
+            session_string=session_string,
         )
