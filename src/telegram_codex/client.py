@@ -7,12 +7,11 @@ from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 
 from .config import Settings
 
 logger = logging.getLogger(__name__)
-
-_TEXT_PREVIEW_CHARS = 64
 
 
 class TelegramNotAuthorized(RuntimeError):
@@ -31,11 +30,17 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _session_for(settings: Settings):
+    if settings.session_string:
+        return StringSession(settings.session_string)
+    return str(settings.session_path)
+
+
 class TelegramGateway:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = TelegramClient(
-            str(settings.session_path), settings.api_id, settings.api_hash
+            _session_for(settings), settings.api_id, settings.api_hash
         )
 
     async def ensure_ready(self) -> TelegramClient:
@@ -43,7 +48,8 @@ class TelegramGateway:
             await self.client.connect()
         if not await self.client.is_user_authorized():
             raise TelegramNotAuthorized(
-                "Telegram session is not authorized. Run `telegram-codex-auth` first."
+                "Telegram session is not authorized. Run `telegram-codex-auth` for a file "
+                "session or `telegram-codex-auth-string` to generate a cloud session secret."
             )
         return self.client
 
@@ -67,9 +73,14 @@ class TelegramGateway:
         *,
         status: str,
         message_id: int | None = None,
-        text_preview: str | None = None,
-        error: str | None = None,
+        error_type: str | None = None,
     ) -> None:
+        """Append metadata-only write audit records.
+
+        Message text, previews, Telegram payloads, and raw exception strings are
+        intentionally excluded. Audit answers who/what/where/when/result, not
+        message content.
+        """
         path = self.settings.audit_log_path
         if path is None:
             return
@@ -81,10 +92,8 @@ class TelegramGateway:
         }
         if message_id is not None:
             record["message_id"] = int(message_id)
-        if text_preview is not None:
-            record["text_preview"] = text_preview[:_TEXT_PREVIEW_CHARS]
-        if error is not None:
-            record["error"] = error
+        if error_type is not None:
+            record["error_type"] = error_type
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as handle:
@@ -111,7 +120,12 @@ class TelegramGateway:
         authorized = bool(await self.client.is_user_authorized())
         info: dict[str, Any] = {
             "authorized": authorized,
-            "session_path": str(self.settings.session_path),
+            "session_mode": self.settings.session_mode,
+            "session_path": (
+                str(self.settings.session_path)
+                if self.settings.session_mode == "file"
+                else None
+            ),
             "allow_writes": self.settings.allow_writes,
             "write_chat_allowlist": (
                 sorted(self.settings.write_chat_allowlist)
@@ -125,7 +139,10 @@ class TelegramGateway:
             ),
         }
         if not authorized:
-            info["hint"] = "Run `telegram-codex-auth` to authorize the local session."
+            info["hint"] = (
+                "Authorize a file session with `telegram-codex-auth` or generate a cloud "
+                "StringSession with `telegram-codex-auth-string`."
+            )
             return info
         me = await self.client.get_me()
         info["user_id"] = int(me.id)
@@ -186,7 +203,12 @@ class TelegramGateway:
             client = await self.ensure_ready()
             message = await client.send_message(chat_id, text)
         except (WritesDisabled, ChatNotAllowed, TelegramNotAuthorized, FloodWaitError) as exc:
-            self._audit("send", chat_id, status="denied", error=str(exc))
+            self._audit(
+                "send",
+                chat_id,
+                status="denied",
+                error_type=type(exc).__name__,
+            )
             raise
         payload = self._message_payload(message)
         self._audit(
@@ -194,7 +216,6 @@ class TelegramGateway:
             chat_id,
             status="ok",
             message_id=payload["message_id"],
-            text_preview=text,
         )
         return payload
 
@@ -209,7 +230,13 @@ class TelegramGateway:
                 raise PermissionError("Only your own outgoing Telegram messages can be edited")
             edited = await client.edit_message(chat_id, message_id, text)
         except (WritesDisabled, ChatNotAllowed, TelegramNotAuthorized, FloodWaitError) as exc:
-            self._audit("edit", chat_id, status="denied", message_id=message_id, error=str(exc))
+            self._audit(
+                "edit",
+                chat_id,
+                status="denied",
+                message_id=message_id,
+                error_type=type(exc).__name__,
+            )
             raise
         payload = self._message_payload(edited)
         self._audit(
@@ -217,7 +244,6 @@ class TelegramGateway:
             chat_id,
             status="ok",
             message_id=payload["message_id"],
-            text_preview=text,
         )
         return payload
 

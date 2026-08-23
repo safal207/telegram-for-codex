@@ -1,4 +1,5 @@
 .env
+.env.remote
 .venv/
 __pycache__/
 *.py[cod]
@@ -9,3 +10,4 @@ __pycache__/
 *.session
 *.session-journal
 .telegram/
+telegram-data/

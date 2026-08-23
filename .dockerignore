@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.env
+.env.remote
+*.session
+*.session-journal
+.telegram
+telegram-data
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache

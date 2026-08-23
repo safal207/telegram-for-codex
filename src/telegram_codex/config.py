@@ -37,6 +37,21 @@ def _parse_allowlist(value: str | None) -> frozenset[int] | None:
     return frozenset(ids) if ids else None
 
 
+def _load_session_string() -> str | None:
+    raw = os.getenv("TELEGRAM_SESSION_STRING")
+    if raw and raw.strip():
+        return raw.strip()
+
+    file_raw = os.getenv("TELEGRAM_SESSION_STRING_FILE")
+    if not file_raw or not file_raw.strip():
+        return None
+    path = Path(file_raw).expanduser()
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     api_id: int
@@ -46,6 +61,11 @@ class Settings:
     allow_writes: bool = False
     write_chat_allowlist: frozenset[int] | None = None
     audit_log_path: Path | None = None
+    session_string: str | None = None
+
+    @property
+    def session_mode(self) -> str:
+        return "string" if self.session_string else "file"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -62,10 +82,13 @@ class Settings:
         except ValueError as exc:
             raise ConfigurationError("TELEGRAM_API_ID must be an integer") from exc
 
+        session_string = _load_session_string()
+
         session_path = Path(
             os.getenv("TELEGRAM_SESSION_PATH", ".telegram/codex")
         ).expanduser()
-        session_path.parent.mkdir(parents=True, exist_ok=True)
+        if session_string is None:
+            session_path.parent.mkdir(parents=True, exist_ok=True)
 
         audit_raw = os.getenv("TELEGRAM_AUDIT_LOG_PATH", ".telegram/audit.jsonl")
         if audit_raw.strip().lower() in _AUDIT_OFF_VALUES:
@@ -84,4 +107,5 @@ class Settings:
                 os.getenv("TELEGRAM_WRITE_CHAT_ALLOWLIST")
             ),
             audit_log_path=audit_log_path,
+            session_string=session_string,
         )

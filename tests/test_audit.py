@@ -56,25 +56,31 @@ class FakeSendClient:
         return _sent_message()
 
 
-def test_send_success_is_audited(
+def test_send_success_is_audited_without_message_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audit_path = tmp_path / "audit.jsonl"
     gateway = _gateway(tmp_path, audit_log_path=audit_path)
     _patch_ready(gateway, monkeypatch, FakeSendClient())
 
-    asyncio.run(gateway.send_message(chat_id=123, text="hello"))
+    secret_text = "message body must never enter audit"
+    asyncio.run(gateway.send_message(chat_id=123, text=secret_text))
 
     records = [json.loads(line) for line in audit_path.read_text("utf-8").splitlines()]
     assert len(records) == 1
-    assert records[0]["event"] == "send"
-    assert records[0]["status"] == "ok"
-    assert records[0]["chat_id"] == 123
-    assert records[0]["message_id"] == 5
-    assert records[0]["text_preview"] == "hello"
+    assert records[0] == {
+        "timestamp": records[0]["timestamp"],
+        "event": "send",
+        "status": "ok",
+        "chat_id": 123,
+        "message_id": 5,
+    }
+    assert secret_text not in audit_path.read_text("utf-8")
+    assert "text" not in records[0]
+    assert "text_preview" not in records[0]
 
 
-def test_denied_send_is_audited(
+def test_denied_send_is_audited_without_raw_error_or_message_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audit_path = tmp_path / "audit.jsonl"
@@ -83,13 +89,15 @@ def test_denied_send_is_audited(
     from telegram_codex.client import WritesDisabled
 
     with pytest.raises(WritesDisabled):
-        asyncio.run(gateway.send_message(chat_id=123, text="denied"))
+        asyncio.run(gateway.send_message(chat_id=123, text="denied secret body"))
 
     records = [json.loads(line) for line in audit_path.read_text("utf-8").splitlines()]
     assert len(records) == 1
     assert records[0]["event"] == "send"
     assert records[0]["status"] == "denied"
-    assert "Write actions are disabled" in records[0]["error"]
+    assert records[0]["error_type"] == "WritesDisabled"
+    assert "error" not in records[0]
+    assert "denied secret body" not in audit_path.read_text("utf-8")
 
 
 def test_reads_are_never_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
