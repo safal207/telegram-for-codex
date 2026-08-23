@@ -7,6 +7,7 @@ This repository now has the pieces required to move from a local Codex MCP to a 
 - `.codex-plugin/plugin.json` — OpenAI plugin package manifest.
 - `telegram-codex` — local STDIO MCP entrypoint.
 - `telegram-codex-remote` — Streamable HTTP MCP entrypoint at `/mcp`.
+- `telegram-codex-auth-string` — local command that generates a cloud Telethon StringSession secret.
 - MCP read/write safety annotations.
 - `confirm=true` guard on write tools from the base PoC.
 - Optional write-chat allowlist and JSONL write audit trail.
@@ -15,36 +16,39 @@ This repository now has the pieces required to move from a local Codex MCP to a 
 
 ## Scope: single-user remote alpha
 
-The current remote mode intentionally reuses one Telethon user session file. This is enough to validate the ChatGPT UX with one personal Telegram account.
+The remote alpha can load one Telethon `StringSession` from `TELEGRAM_SESSION_STRING`. This lets a stateless/container host validate the ChatGPT UX without requiring a persistent disk.
 
-It is not the final public multi-user architecture. A public release must add OAuth for the MCP connection, per-user encrypted Telegram session storage, revocation/account deletion, and legal/privacy flows.
+A file-based session at `TELEGRAM_SESSION_PATH` remains supported when a private persistent volume is available.
+
+This is not the final public multi-user architecture. A public release must add OAuth for the MCP connection, per-user encrypted Telegram session storage, revocation/account deletion, and legal/privacy flows.
 
 Never put Telegram login codes, session strings, or 2FA passwords into ChatGPT messages or MCP tool arguments.
 
-## 1. Build and authorize the remote container
+## 1. Generate the remote session secret locally
 
-Create `.env.remote` from `.env.remote.example` and fill in the Telegram API values.
+Install the project locally and set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_PHONE`. Then run:
+
+```bash
+telegram-codex-auth-string
+```
+
+Telegram will ask for the login code and, when enabled, the account 2FA password **in the local terminal**. The command then prints one Telethon StringSession value.
+
+Treat that value like a password/bearer credential: copy it directly to the hosting platform's secret manager as `TELEGRAM_SESSION_STRING`. Never commit it and never paste it into ChatGPT.
+
+## 2. Build and run Streamable HTTP MCP
+
+Create `.env.remote` from `.env.remote.example` for non-secret settings and build:
 
 ```bash
 docker build -t telegram-for-codex .
-mkdir -p ./telegram-data
-
-docker run --rm -it \
-  --env-file .env.remote \
-  -v "$PWD/telegram-data:/data/telegram" \
-  telegram-for-codex telegram-codex-auth
 ```
 
-The Telegram session remains in the mounted volume.
-
-## 2. Run Streamable HTTP MCP
-
-For local testing, set the allowed Host/Origin values to localhost (the code defaults to localhost allowlists when the variables are absent), then run:
+For local HTTP testing you may inject `TELEGRAM_SESSION_STRING` from your local secret store/environment and run:
 
 ```bash
 docker run --rm \
   --env-file .env.remote \
-  -v "$PWD/telegram-data:/data/telegram" \
   -p 8000:8000 \
   telegram-for-codex
 ```
@@ -72,7 +76,7 @@ TELEGRAM_MCP_ALLOWED_ORIGINS=https://chatgpt.com,https://chat.openai.com
 
 Use the actual public hostname and the actual OpenAI browser origins observed for the supported product surface. Do not simply disable transport security to make a 421/403 disappear.
 
-Keep `TELEGRAM_ALLOW_WRITES=false` during the first connection test.
+Keep `TELEGRAM_ALLOW_WRITES=false` during the first connection test. On stateless hosts, use `TELEGRAM_AUDIT_LOG_PATH=off` unless you have a durable log sink or persistent private volume.
 
 ## 3. Inspect the endpoint
 
@@ -94,7 +98,7 @@ Verify discovery of:
 
 Read-path acceptance:
 
-1. `telegram_whoami` reports `authorized: true`.
+1. `telegram_whoami` reports `authorized: true` and `session_mode: string` for the cloud-secret path.
 2. `telegram_list_chats` returns real Telegram chats.
 3. Search/read work without enabling writes.
 
