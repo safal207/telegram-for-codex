@@ -1,0 +1,28 @@
+{
+  "name": "telegram-for-codex",
+  "version": "0.2.0",
+  "description": "Read, search, send, and edit Telegram messages from ChatGPT and Codex.",
+  "author": {
+    "name": "Aleksey Safonov",
+    "url": "https://github.com/safal207"
+  },
+  "homepage": "https://github.com/safal207/telegram-for-codex",
+  "repository": "https://github.com/safal207/telegram-for-codex",
+  "license": "MIT",
+  "keywords": ["telegram", "messaging", "productivity", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Telegram",
+    "shortDescription": "Use Telegram without leaving the chat",
+    "longDescription": "Read and search Telegram conversations, then send or edit messages with explicit approval for write actions.",
+    "developerName": "Aleksey Safonov",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/safal207/telegram-for-codex",
+    "defaultPrompt": [
+      "Show my unread Telegram chats.",
+      "Find my recent Telegram conversation about this project.",
+      "Покажи непрочитанные сообщения в Telegram."
+    ]
+  }
+}
