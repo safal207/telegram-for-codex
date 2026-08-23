@@ -29,15 +29,16 @@ def main() -> None:
         allowed_origins=allowed_origins,
     )
 
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=port,
-        streamable_http_path="/mcp",
-        stateless_http=True,
-        json_response=True,
-        transport_security=security,
-    )
+    # FastMCP 1.29 stores HTTP deployment options in `mcp.settings`;
+    # `run()` itself accepts only the transport selector.
+    mcp.settings.host = host
+    mcp.settings.port = port
+    mcp.settings.streamable_http_path = "/mcp"
+    mcp.settings.stateless_http = True
+    mcp.settings.json_response = True
+    mcp.settings.transport_security = security
+
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
