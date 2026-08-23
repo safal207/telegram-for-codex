@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .client import TelegramGateway
 from .config import Settings
 
-mcp = FastMCP("telegram-for-codex")
 _gateway: TelegramGateway | None = None
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
@@ -37,7 +38,6 @@ def _require_confirm(confirm: bool) -> None:
         )
 
 
-@mcp.tool(annotations=_READ_ONLY)
 async def telegram_whoami() -> dict:
     """Show Telegram authorization and safety status without exposing phone-number PII."""
     info = await gateway().whoami()
@@ -45,25 +45,21 @@ async def telegram_whoami() -> dict:
     return info
 
 
-@mcp.tool(annotations=_READ_ONLY)
 def telegram_audit_log(limit: int = 20) -> list[dict]:
     """Show the most recent audited Telegram write attempts (send/edit), including denied ones."""
     return gateway().read_audit_tail(limit=max(1, min(limit, 100)))
 
 
-@mcp.tool(annotations=_READ_ONLY)
 async def telegram_list_chats(limit: int = 20, unread_only: bool = False) -> list[dict]:
     """List recent Telegram chats. Set unread_only=true to return only chats with unread messages."""
     return await gateway().list_chats(limit=limit, unread_only=unread_only)
 
 
-@mcp.tool(annotations=_READ_ONLY)
 async def telegram_get_messages(chat_id: int, limit: int = 20) -> list[dict]:
     """Read recent messages from a Telegram chat by chat_id."""
     return await gateway().get_messages(chat_id=chat_id, limit=limit)
 
 
-@mcp.tool(annotations=_READ_ONLY)
 async def telegram_search_messages(
     query: str, chat_id: int | None = None, limit: int = 20
 ) -> list[dict]:
@@ -71,20 +67,50 @@ async def telegram_search_messages(
     return await gateway().search_messages(query=query, chat_id=chat_id, limit=limit)
 
 
-@mcp.tool(annotations=_WRITE)
 async def telegram_send_message(chat_id: int, text: str, confirm: bool) -> dict:
     """Send a Telegram text message. Requires confirm=true and user approval in Codex."""
     _require_confirm(confirm)
     return await gateway().send_message(chat_id=chat_id, text=text)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE_WRITE)
 async def telegram_edit_message(
     chat_id: int, message_id: int, text: str, confirm: bool
 ) -> dict:
     """Edit one of the authenticated user's outgoing Telegram text messages. Requires confirm=true and user approval in Codex."""
     _require_confirm(confirm)
     return await gateway().edit_message(chat_id=chat_id, message_id=message_id, text=text)
+
+
+def register_tools(app: FastMCP) -> FastMCP:
+    app.tool(annotations=_READ_ONLY)(telegram_whoami)
+    app.tool(annotations=_READ_ONLY)(telegram_audit_log)
+    app.tool(annotations=_READ_ONLY)(telegram_list_chats)
+    app.tool(annotations=_READ_ONLY)(telegram_get_messages)
+    app.tool(annotations=_READ_ONLY)(telegram_search_messages)
+    app.tool(annotations=_WRITE)(telegram_send_message)
+    app.tool(annotations=_DESTRUCTIVE_WRITE)(telegram_edit_message)
+    return app
+
+
+def create_mcp(
+    *,
+    token_verifier: TokenVerifier | None = None,
+    auth: AuthSettings | None = None,
+) -> FastMCP:
+    app = FastMCP(
+        "telegram-for-codex",
+        instructions=(
+            "Read/search Telegram only within the authenticated user's account. "
+            "Send/edit require explicit user approval plus confirm=true. Never reveal Telegram session secrets."
+        ),
+        token_verifier=token_verifier,
+        auth=auth,
+    )
+    return register_tools(app)
+
+
+# Local Codex uses stdio, whose security boundary is the launching process.
+mcp = create_mcp()
 
 
 def main() -> None:
