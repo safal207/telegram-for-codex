@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .connect_web import install_connect_routes
+from .health import install_health_routes
 from .personal_auth import load_personal_auth_from_env
 from .server import create_mcp, reset_gateway
 
@@ -49,6 +50,10 @@ def build_remote_mcp() -> FastMCP:
     # `/connect` uses its separate TELEGRAM_CONNECT_TOKEN gate. MCP SDK auth
     # wraps `/mcp`; custom connect routes remain independently protected.
     install_connect_routes(app, reset_gateway)
+
+    # Hosting probes need a stable, content-free route that does not require
+    # Telegram authorization and does not reveal whether a session exists.
+    install_health_routes(app)
     return configure_remote_mcp(app)
 
 
