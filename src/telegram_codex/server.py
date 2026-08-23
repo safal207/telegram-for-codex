@@ -39,8 +39,10 @@ def _require_confirm(confirm: bool) -> None:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def telegram_whoami() -> dict:
-    """Show authorization status of the local Telegram session and current safety configuration."""
-    return await gateway().whoami()
+    """Show Telegram authorization and safety status without exposing phone-number PII."""
+    info = await gateway().whoami()
+    info.pop("phone", None)
+    return info
 
 
 @mcp.tool(annotations=_READ_ONLY)
