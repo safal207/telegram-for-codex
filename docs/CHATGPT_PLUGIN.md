@@ -10,6 +10,7 @@ This repository now has the pieces required to move from a local Codex MCP to a 
 - MCP read/write safety annotations.
 - `confirm=true` guard on write tools from the base PoC.
 - Optional write-chat allowlist and JSONL write audit trail.
+- DNS-rebinding protection with explicit Host/Origin allowlists.
 - Docker deployment scaffold.
 
 ## Scope: single-user remote alpha
@@ -18,7 +19,7 @@ The current remote mode intentionally reuses one Telethon user session file. Thi
 
 It is not the final public multi-user architecture. A public release must add OAuth for the MCP connection, per-user encrypted Telegram session storage, revocation/account deletion, and legal/privacy flows.
 
-Never put Telegram login codes or 2FA passwords into ChatGPT messages or MCP tool arguments.
+Never put Telegram login codes, session strings, or 2FA passwords into ChatGPT messages or MCP tool arguments.
 
 ## 1. Build and authorize the remote container
 
@@ -38,6 +39,8 @@ The Telegram session remains in the mounted volume.
 
 ## 2. Run Streamable HTTP MCP
 
+For local testing, set the allowed Host/Origin values to localhost (the code defaults to localhost allowlists when the variables are absent), then run:
+
 ```bash
 docker run --rm \
   --env-file .env.remote \
@@ -52,11 +55,22 @@ Local MCP endpoint:
 http://localhost:8000/mcp
 ```
 
-For ChatGPT developer-mode testing, deploy the same container behind a stable public HTTPS URL, for example:
+The server uses the current FastMCP Streamable HTTP option `streamable_http_path="/mcp"` and keeps DNS-rebinding protection enabled.
+
+For a public deployment such as:
 
 ```text
 https://telegram.example.com/mcp
 ```
+
+set at least:
+
+```dotenv
+TELEGRAM_MCP_ALLOWED_HOSTS=telegram.example.com,telegram.example.com:*
+TELEGRAM_MCP_ALLOWED_ORIGINS=https://chatgpt.com,https://chat.openai.com
+```
+
+Use the actual public hostname and the actual OpenAI browser origins observed for the supported product surface. Do not simply disable transport security to make a 421/403 disappear.
 
 Keep `TELEGRAM_ALLOW_WRITES=false` during the first connection test.
 
@@ -83,6 +97,8 @@ Read-path acceptance:
 1. `telegram_whoami` reports `authorized: true`.
 2. `telegram_list_chats` returns real Telegram chats.
 3. Search/read work without enabling writes.
+
+If the deployed server returns HTTP 421, verify `TELEGRAM_MCP_ALLOWED_HOSTS`. If a browser receives HTTP 403, verify `TELEGRAM_MCP_ALLOWED_ORIGINS`.
 
 ## 4. Register the MCP server in ChatGPT developer mode
 
