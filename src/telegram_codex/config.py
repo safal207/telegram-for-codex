@@ -37,6 +37,21 @@ def _parse_allowlist(value: str | None) -> frozenset[int] | None:
     return frozenset(ids) if ids else None
 
 
+def _load_session_string() -> str | None:
+    raw = os.getenv("TELEGRAM_SESSION_STRING")
+    if raw and raw.strip():
+        return raw.strip()
+
+    file_raw = os.getenv("TELEGRAM_SESSION_STRING_FILE")
+    if not file_raw or not file_raw.strip():
+        return None
+    path = Path(file_raw).expanduser()
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     api_id: int
@@ -67,8 +82,7 @@ class Settings:
         except ValueError as exc:
             raise ConfigurationError("TELEGRAM_API_ID must be an integer") from exc
 
-        session_string_raw = os.getenv("TELEGRAM_SESSION_STRING")
-        session_string = session_string_raw.strip() if session_string_raw else None
+        session_string = _load_session_string()
 
         session_path = Path(
             os.getenv("TELEGRAM_SESSION_PATH", ".telegram/codex")
