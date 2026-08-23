@@ -4,7 +4,9 @@ import asyncio
 
 import httpx
 import pytest
+from starlette.testclient import TestClient
 
+from telegram_codex import remote_server
 from telegram_codex.config import ConfigurationError
 from telegram_codex.personal_auth import (
     IntrospectionTokenVerifier,
@@ -43,6 +45,34 @@ def test_static_verifier_accepts_only_exact_high_entropy_token() -> None:
 def test_static_token_rejects_short_secret() -> None:
     with pytest.raises(ConfigurationError, match="at least 32"):
         StaticTokenVerifier("short", ["telegram:personal"])
+
+
+def test_remote_http_rejects_missing_bearer_and_publishes_resource_metadata(monkeypatch) -> None:
+    token = "t" * 40
+    monkeypatch.setenv("TELEGRAM_MCP_AUTH_MODE", "static")
+    monkeypatch.setenv("TELEGRAM_MCP_STATIC_TOKEN", token)
+    monkeypatch.setenv("TELEGRAM_MCP_PUBLIC_URL", "http://localhost/mcp")
+    app = remote_server.build_remote_mcp().streamable_http_app()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        denied = client.get("/mcp", headers={"host": "localhost"})
+        assert denied.status_code == 401
+        assert "Bearer" in denied.headers.get("www-authenticate", "")
+
+        metadata = client.get(
+            "/.well-known/oauth-protected-resource/mcp",
+            headers={"host": "localhost"},
+        )
+        assert metadata.status_code == 200
+        body = metadata.json()
+        assert body["resource"] == "http://localhost/mcp"
+        assert body["scopes_supported"] == ["telegram:personal"]
+
+        authorized = client.get(
+            "/mcp",
+            headers={"host": "localhost", "authorization": f"Bearer {token}"},
+        )
+        assert authorized.status_code != 401
 
 
 def test_introspection_verifier_maps_active_token_and_rejects_wrong_audience(monkeypatch) -> None:
