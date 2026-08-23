@@ -1,19 +1,26 @@
-# Telegram for Codex
+# Telegram for ChatGPT & Codex
 
-Use your real Telegram **user account** from Codex through a small local MCP server.
+Use your real Telegram **user account** from ChatGPT and Codex through MCP.
 
-The first goal is deliberately narrow: make Telegram feel like another Codex source — list chats, read messages, search history, send a reply, and edit your own message without opening a separate Telegram UI.
+The product goal is simple: make Telegram feel like a native source — read chats, search history, send replies, and edit your own messages without leaving the AI conversation.
 
 ## Status
 
-`v0.1 PoC` — local Codex MCP vertical slice. The repository is not yet a published Plugin Directory listing, but Codex desktop, CLI, and IDE can connect to it directly as a local STDIO MCP server.
+`v0.2 remote/plugin alpha`
+
+Two execution modes now share the same Telegram tools:
+
+1. **Local Codex** — STDIO MCP with `telegram-codex`.
+2. **ChatGPT plugin path** — Streamable HTTP MCP at `/mcp` with `telegram-codex-remote`, packaged with `.codex-plugin/plugin.json`.
+
+The remote alpha is deliberately **single-user**. It proves the UX and plugin transport before we add production multi-user OAuth and encrypted per-user Telegram session storage.
 
 ## Architecture
 
 ```text
-Codex desktop / CLI / IDE
+ChatGPT / Codex
       |
-      | local MCP over stdio
+      | MCP tools
       v
 telegram-for-codex
       |
@@ -22,58 +29,46 @@ telegram-for-codex
 Your Telegram user account
 ```
 
-The MCP contract is intentionally independent of the Telegram client library. Telethon is used for the first proof of concept because it is lightweight. A TDLib backend can replace it later without changing the Codex-facing tool names.
+Local Codex uses STDIO. Remote ChatGPT testing uses Streamable HTTP over a public HTTPS URL ending in `/mcp`.
 
 ## MCP tools
 
+- `telegram_connection_status()` — verify which Telegram account is authorized.
 - `telegram_list_chats(limit, unread_only)` — recent chats and unread counts.
 - `telegram_get_messages(chat_id, limit)` — recent messages in one chat.
 - `telegram_search_messages(query, chat_id?, limit)` — search globally or in one chat.
 - `telegram_send_message(chat_id, text)` — send text (**write**).
 - `telegram_edit_message(chat_id, message_id, text)` — edit one of your outgoing messages (**write**).
 
+Read tools carry MCP read-only annotations. Send/edit carry write annotations and are additionally blocked by the server unless `TELEGRAM_ALLOW_WRITES=true`.
+
 ## Security model
 
-- Telegram credentials come only from local environment variables / local `.env`.
-- Telegram's local session database is ignored by git.
+- Never commit `.env`, `.env.remote`, Telegram session files, login codes, or 2FA passwords.
 - Reads are enabled by default.
 - Writes are disabled by default with `TELEGRAM_ALLOW_WRITES=false`.
-- Codex is configured to prompt before `telegram_send_message` and `telegram_edit_message`.
-- Never commit `.env`, `*.session`, login codes, or Telegram 2FA passwords.
+- ChatGPT/Codex should still require approval for send/edit after writes are enabled.
+- The remote alpha stores one Telegram user session. Do not treat it as a multi-user production service yet.
+- Never pass Telegram login codes or 2FA passwords through an AI chat or MCP tool argument.
 
-## 1. Create Telegram API credentials
+## Local Codex quickstart
 
-Create an application at `https://my.telegram.org` and obtain `api_id` and `api_hash`.
-
-## 2. Install
-
-### Windows PowerShell
-
-```powershell
-git clone https://github.com/safal207/telegram-for-codex.git
-cd telegram-for-codex
-git switch feat/mcp-poc
-
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-```
-
-### macOS / Linux
+Create Telegram API credentials at `https://my.telegram.org`, then:
 
 ```bash
 git clone https://github.com/safal207/telegram-for-codex.git
 cd telegram-for-codex
-git switch feat/mcp-poc
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-cp .env.example .env
+git switch feat/chatgpt-plugin-remote
+python -m venv .venv
 ```
 
-Fill in the local `.env`:
+Activate the virtualenv and install:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Copy `.env.example` to `.env` and set:
 
 ```dotenv
 TELEGRAM_API_ID=123456
@@ -83,114 +78,106 @@ TELEGRAM_SESSION_PATH=.telegram/codex
 TELEGRAM_ALLOW_WRITES=false
 ```
 
-## 3. Authorize the Telegram user account once
+Authorize once:
 
 ```bash
 telegram-codex-auth
 ```
 
-Telegram will ask for the login code and, if enabled on your account, the 2FA password. They are entered directly into the local authorization process. Do not paste them into Codex or commit them to the repository.
-
-## 4. Connect it directly to Codex
-
-Codex desktop, Codex CLI, and the IDE extension share MCP configuration. The default config file is:
-
-```text
-~/.codex/config.toml
-```
-
-You can also use a project-local `.codex/config.toml` in a trusted project.
-
-### Windows example
-
-Use the **absolute paths on your machine**:
-
-```toml
-[mcp_servers.telegram]
-command = "C:\\Users\\YOUR_USER\\path\\telegram-for-codex\\.venv\\Scripts\\python.exe"
-args = ["-m", "telegram_codex.server"]
-cwd = "C:\\Users\\YOUR_USER\\path\\telegram-for-codex"
-enabled = true
-startup_timeout_sec = 20
-tool_timeout_sec = 60
-default_tools_approval_mode = "auto"
-
-[mcp_servers.telegram.tools.telegram_send_message]
-approval_mode = "prompt"
-
-[mcp_servers.telegram.tools.telegram_edit_message]
-approval_mode = "prompt"
-```
-
-### macOS / Linux example
-
-```toml
-[mcp_servers.telegram]
-command = "/absolute/path/telegram-for-codex/.venv/bin/python"
-args = ["-m", "telegram_codex.server"]
-cwd = "/absolute/path/telegram-for-codex"
-enabled = true
-startup_timeout_sec = 20
-tool_timeout_sec = 60
-default_tools_approval_mode = "auto"
-
-[mcp_servers.telegram.tools.telegram_send_message]
-approval_mode = "prompt"
-
-[mcp_servers.telegram.tools.telegram_edit_message]
-approval_mode = "prompt"
-```
-
-Restart Codex after editing the configuration.
-
-You can then verify the connection:
-
-```text
-/mcp
-```
-
-In Codex CLI you can also run:
+Run the local MCP server:
 
 ```bash
-codex mcp list
+telegram-codex
 ```
 
-Codex also supports adding STDIO servers with `codex mcp add`, but the explicit `config.toml` setup above is recommended for this PoC because it lets us keep per-tool write approvals visible and reviewable.
+## Remote ChatGPT plugin quickstart
 
-## 5. First acceptance test: read-only
+Copy `.env.remote.example` to `.env.remote`, fill the Telegram API values, and keep writes disabled.
 
-Keep:
+Build the container:
 
-```dotenv
-TELEGRAM_ALLOW_WRITES=false
+```bash
+docker build -t telegram-for-codex .
 ```
 
-Then ask Codex:
+Authorize the single-user Telegram session into a persistent volume:
 
-1. `Покажи последние 10 чатов Telegram.`
-2. Pick a returned `chat_id`.
-3. `Покажи последние 10 сообщений из chat_id ...`.
-4. `Найди в Telegram сообщения про <harmless phrase>.`
+```bash
+mkdir -p ./telegram-data
 
-`PASS-READ` means these operations work from Codex without opening Telegram separately.
-
-## 6. Enable writes only after read passes
-
-Change the local `.env`:
-
-```dotenv
-TELEGRAM_ALLOW_WRITES=true
+docker run --rm -it \
+  --env-file .env.remote \
+  -v "$PWD/telegram-data:/data/telegram" \
+  telegram-for-codex telegram-codex-auth
 ```
 
-Restart Codex/MCP, then test only against a safe chat (for example Saved Messages or a dedicated test chat).
+Start the remote MCP server:
 
-Expected behavior:
+```bash
+docker run --rm \
+  --env-file .env.remote \
+  -v "$PWD/telegram-data:/data/telegram" \
+  -p 8000:8000 \
+  telegram-for-codex
+```
 
-- `telegram_send_message` → Codex prompts for approval.
-- `telegram_edit_message` → Codex prompts for approval.
-- editing an incoming/other person's message → rejected by the MCP server.
+Local endpoint:
 
-`PASS-WRITE` means send and edit work only after explicit approval.
+```text
+http://localhost:8000/mcp
+```
+
+For ChatGPT developer-mode testing, deploy the same container behind a stable **public HTTPS** endpoint such as:
+
+```text
+https://your-domain.example/mcp
+```
+
+Then register that MCP URL in ChatGPT developer mode. ChatGPT creates a technical connection ID starting with `plugin_asdk_app...`. That generated ID is the one remaining value needed to wire `.app.json` into this plugin package.
+
+See the full flow in [`docs/CHATGPT_PLUGIN.md`](docs/CHATGPT_PLUGIN.md).
+
+## Plugin package
+
+The repository now includes:
+
+```text
+.codex-plugin/plugin.json
+skills/telegram-for-codex/SKILL.md
+src/telegram_codex/server.py
+src/telegram_codex/remote_server.py
+Dockerfile
+```
+
+OpenAI plugin packaging expects `.codex-plugin/plugin.json` as the entry point. Once a remote MCP connection is registered in ChatGPT, the generated `plugin_asdk_app...` ID can be mapped through `.app.json` and referenced by the manifest.
+
+## Acceptance tests
+
+### PASS-READ
+
+With writes disabled:
+
+```text
+Покажи последние 10 чатов Telegram.
+```
+
+```text
+Покажи непрочитанные чаты Telegram.
+```
+
+```text
+Найди в Telegram сообщения про <topic>.
+```
+
+### PASS-WRITE
+
+Only after PASS-READ, enable `TELEGRAM_ALLOW_WRITES=true` and test against Saved Messages or a dedicated safe chat.
+
+Expected:
+
+- send requires product approval;
+- edit requires product approval;
+- editing another person's incoming message is rejected server-side.
 
 ## Why not a Telegram bot?
 
@@ -198,14 +185,18 @@ A bot cannot act as your normal personal Telegram account or automatically acces
 
 ## Roadmap
 
-- [x] MCP tool contract.
-- [x] Local user-session authorization command.
-- [x] Read/search tools.
-- [x] Guarded send/edit tools.
-- [x] Safety regression tests for disabled writes and edit ownership.
-- [x] Exact local Codex MCP configuration and per-tool approvals.
-- [ ] Run `PASS-READ` against a real Telegram account.
-- [ ] Run `PASS-WRITE` against a safe test chat.
-- [ ] Add broader mocked gateway/MCP integration tests.
-- [ ] Package the MCP + skill as a first-class installable Codex plugin.
-- [ ] Evaluate TDLib backend after the UX contract is proven.
+- [x] Local STDIO MCP vertical slice.
+- [x] User-session authorization.
+- [x] Read/search/send/edit tools.
+- [x] Safety regression tests.
+- [x] MCP read/write annotations.
+- [x] Remote Streamable HTTP `/mcp` transport.
+- [x] `.codex-plugin/plugin.json` package manifest.
+- [x] Docker deployment scaffold.
+- [ ] Run PASS-READ against a real Telegram account.
+- [ ] Deploy a stable HTTPS MCP endpoint.
+- [ ] Register the endpoint in ChatGPT developer mode and obtain `plugin_asdk_app...`.
+- [ ] Generate `.app.json` and wire it into the plugin manifest.
+- [ ] Run end-to-end plugin tests in ChatGPT.
+- [ ] Add OAuth + encrypted per-user Telegram sessions for public use.
+- [ ] Add privacy/terms/account-deletion flows and submit the plugin for public review.
