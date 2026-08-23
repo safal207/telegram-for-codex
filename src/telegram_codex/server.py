@@ -21,6 +21,15 @@ def gateway() -> TelegramGateway:
     return _gateway
 
 
+async def reset_gateway() -> None:
+    """Drop the cached Telegram client so new session credentials take effect."""
+    global _gateway
+    old = _gateway
+    _gateway = None
+    if old is not None and old.client.is_connected():
+        await old.client.disconnect()
+
+
 def _require_confirm(confirm: bool) -> None:
     if not confirm:
         raise ValueError(
