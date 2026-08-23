@@ -27,6 +27,24 @@ class TelegramGateway:
             str(settings.session_path), settings.api_id, settings.api_hash
         )
 
+    async def connection_status(self) -> dict[str, Any]:
+        if not self.client.is_connected():
+            await self.client.connect()
+        authorized = await self.client.is_user_authorized()
+        if not authorized:
+            return {"authorized": False, "user_id": None, "username": None, "display_name": None}
+
+        me = await self.client.get_me()
+        display_name = " ".join(
+            part for part in (getattr(me, "first_name", None), getattr(me, "last_name", None)) if part
+        ) or getattr(me, "username", None) or str(me.id)
+        return {
+            "authorized": True,
+            "user_id": int(me.id),
+            "username": getattr(me, "username", None),
+            "display_name": display_name,
+        }
+
     async def ensure_ready(self) -> TelegramClient:
         if not self.client.is_connected():
             await self.client.connect()
