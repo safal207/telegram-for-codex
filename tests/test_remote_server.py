@@ -1,4 +1,20 @@
+import inspect
+
 from telegram_codex import remote_server
+
+
+def test_fastmcp_run_supports_remote_keywords() -> None:
+    parameters = inspect.signature(remote_server.mcp.run).parameters
+    for name in (
+        "transport",
+        "host",
+        "port",
+        "streamable_http_path",
+        "stateless_http",
+        "json_response",
+        "transport_security",
+    ):
+        assert name in parameters, f"FastMCP.run is missing expected keyword: {name}"
 
 
 def test_remote_server_runs_streamable_http(monkeypatch) -> None:
