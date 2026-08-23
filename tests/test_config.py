@@ -37,6 +37,7 @@ def test_parse_allowlist_rejects_non_integers() -> None:
 def _set_base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.delenv("TELEGRAM_SESSION_STRING", raising=False)
     monkeypatch.delenv("TELEGRAM_WRITE_CHAT_ALLOWLIST", raising=False)
     monkeypatch.delenv("TELEGRAM_AUDIT_LOG_PATH", raising=False)
 
@@ -49,6 +50,8 @@ def test_from_env_defaults_allow_all_chats_and_audit_on(
 
     settings = Settings.from_env()
 
+    assert settings.session_mode == "file"
+    assert settings.session_string is None
     assert settings.write_chat_allowlist is None
     assert settings.audit_log_path == Path(".telegram/audit.jsonl")
     assert (tmp_path / ".telegram" / "audit.jsonl").parent.exists()
@@ -66,3 +69,20 @@ def test_from_env_parses_allowlist_and_audit_off(
 
     assert settings.write_chat_allowlist == frozenset({777000, 42})
     assert settings.audit_log_path is None
+
+
+def test_from_env_prefers_string_session_for_cloud(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_base_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING", "  secret-session  ")
+    monkeypatch.setenv("TELEGRAM_SESSION_PATH", "unused/session")
+    monkeypatch.setenv("TELEGRAM_AUDIT_LOG_PATH", "off")
+
+    settings = Settings.from_env()
+
+    assert settings.session_mode == "string"
+    assert settings.session_string == "secret-session"
+    assert settings.session_path == Path("unused/session")
+    assert not (tmp_path / "unused").exists()
