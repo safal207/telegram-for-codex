@@ -10,8 +10,9 @@ The goal is to make Telegram feel like another AI source: list chats, read messa
 
 - **Local Codex:** STDIO MCP via `telegram-codex`.
 - **Remote ChatGPT path:** Streamable HTTP MCP at `/mcp` via `telegram-codex-remote`.
+- **Mobile authorization:** open `/connect` on a phone; no Termux required.
 - **Plugin package:** `.codex-plugin/plugin.json` + bundled Telegram skill.
-- **Cloud-friendly auth:** optional Telethon `StringSession` loaded from a hosting secret.
+- **Cloud auth:** Telethon `StringSession` can be loaded from a secret manager or a private session-string file.
 - **Current remote scope:** single-user alpha.
 
 A public multi-user plugin still needs OAuth, encrypted per-user Telegram sessions, disconnect/deletion flows, legal pages, and OpenAI submission review.
@@ -32,9 +33,10 @@ Read tools carry MCP read-only annotations. Write tools are annotated as writes,
 
 - Never commit `.env`, `.env.remote`, `*.session`, `TELEGRAM_SESSION_STRING`, login codes, or Telegram 2FA passwords.
 - Never pass Telegram login codes, session strings, or 2FA passwords through ChatGPT or MCP tool arguments.
+- `/connect` must only be exposed over HTTPS and requires a private `TELEGRAM_CONNECT_TOKEN`.
 - Keep `TELEGRAM_ALLOW_WRITES=false` until read/search works end-to-end.
 - Keep product approval enabled for send/edit even after server-side writes are enabled.
-- Store `TELEGRAM_SESSION_STRING` only in a hosting secret manager. It grants access to the Telegram account.
+- A Telegram StringSession is a bearer credential. Keep the session file on a private persistent volume or the value in a hosting secret manager.
 
 ## Local Codex quickstart
 
@@ -64,46 +66,56 @@ Run the local server:
 telegram-codex
 ```
 
-## Remote ChatGPT plugin quickstart
+## Remote ChatGPT plugin quickstart — phone-first
 
-For a stateless cloud deployment, generate a Telethon StringSession **locally**:
+This is the intended single-user alpha flow when you do **not** want Termux or a desktop authorization step.
+
+1. Put `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in the server's secret/config environment.
+2. Set a long random `TELEGRAM_CONNECT_TOKEN`.
+3. Set `TELEGRAM_SESSION_STRING_FILE=/data/telegram/session.string` and mount `/data/telegram` as a **private persistent volume**.
+4. Keep `TELEGRAM_ALLOW_WRITES=false`.
+5. Deploy the container behind HTTPS.
+6. Open this URL on your phone:
+
+```text
+https://your-domain.example/connect
+```
+
+The page asks for:
+
+```text
+private connect key → phone number → Telegram code → 2FA password (only if enabled)
+```
+
+The Telegram login code and 2FA password are used only to complete the live Telegram authorization. They are not returned by the API, not written to the session file, and should never be pasted into ChatGPT. After success, the server stores only a Telethon StringSession in `TELEGRAM_SESSION_STRING_FILE` with restrictive file permissions and reloads the MCP Telegram client immediately.
+
+The same remote process exposes:
+
+```text
+https://your-domain.example/mcp
+```
+
+For ChatGPT developer-mode testing, configure `TELEGRAM_MCP_ALLOWED_HOSTS` for the public hostname and `TELEGRAM_MCP_ALLOWED_ORIGINS` for the supported OpenAI web origins; DNS-rebinding protection stays enabled.
+
+Register the `/mcp` URL in ChatGPT Plugins; ChatGPT creates a technical connection ID beginning with `plugin_asdk_app...`. That ID is then wired into `.app.json` and referenced by the plugin manifest.
+
+## Alternative: stateless secret-manager mode
+
+If the host has no persistent private volume, generate a StringSession separately with:
 
 ```bash
 telegram-codex-auth-string
 ```
 
-The command prints one sensitive session value. Put it directly into your hosting secret manager as `TELEGRAM_SESSION_STRING`. Do **not** commit it and do **not** paste it into ChatGPT.
-
-Create `.env.remote` from `.env.remote.example` for non-secret settings, then build:
-
-```bash
-docker build -t telegram-for-codex .
-```
-
-Run the Streamable HTTP server locally:
-
-```bash
-docker run --rm \
-  --env-file .env.remote \
-  -p 8000:8000 \
-  telegram-for-codex
-```
-
-Local endpoint:
-
-```text
-http://localhost:8000/mcp
-```
-
-For ChatGPT developer-mode testing, deploy that container behind a stable **public HTTPS** URL ending in `/mcp`. Configure `TELEGRAM_MCP_ALLOWED_HOSTS` for the public hostname and `TELEGRAM_MCP_ALLOWED_ORIGINS` for the supported OpenAI web origins; DNS-rebinding protection stays enabled.
-
-Register the URL in ChatGPT Plugins; ChatGPT will create a technical connection ID beginning with `plugin_asdk_app...`. That ID is then wired into `.app.json` and referenced by this plugin manifest.
-
-A persistent private volume with `TELEGRAM_SESSION_PATH` remains supported as an alternative to `TELEGRAM_SESSION_STRING`.
+Store the result only in the hosting secret manager as `TELEGRAM_SESSION_STRING`. This direct secret takes precedence over `TELEGRAM_SESSION_STRING_FILE`.
 
 Full flow: [`docs/CHATGPT_PLUGIN.md`](docs/CHATGPT_PLUGIN.md).
 
 ## Acceptance
+
+### PASS-CONNECT
+
+On a phone, open `/connect`, complete Telegram authorization, then call `telegram_whoami`. Expected result: `authorized: true` and no session secret in the response.
 
 ### PASS-READ
 
@@ -136,10 +148,12 @@ A bot cannot act as your normal personal Telegram account or automatically acces
 - [x] `.codex-plugin/plugin.json` package manifest.
 - [x] Docker deployment scaffold.
 - [x] Cloud `StringSession` secret mode.
+- [x] Mobile `/connect` flow: phone → code → 2FA → private StringSession file.
+- [ ] Run PASS-CONNECT against a real Telegram account.
 - [ ] Run PASS-READ against a real Telegram account.
 - [ ] Deploy a stable HTTPS MCP endpoint.
 - [ ] Register the endpoint in ChatGPT developer mode and obtain `plugin_asdk_app...`.
 - [ ] Generate `.app.json` and wire it into the plugin manifest.
 - [ ] Run end-to-end plugin tests in ChatGPT.
-- [ ] Add OAuth + encrypted per-user Telegram session storage.
+- [ ] Add production OAuth + encrypted per-user Telegram session storage.
 - [ ] Add privacy/terms/account-deletion flows and submit for public review.
