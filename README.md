@@ -26,11 +26,15 @@ The MCP contract is intentionally independent of the Telegram client library. Te
 
 ## MCP tools
 
+- `telegram_whoami()` — session/safety status: authorized user, writes flag, allowlist, audit path.
+- `telegram_audit_log(limit)` — recent audited write attempts, including denied ones.
 - `telegram_list_chats(limit, unread_only)` — recent chats and unread counts.
 - `telegram_get_messages(chat_id, limit)` — recent messages in one chat.
 - `telegram_search_messages(query, chat_id?, limit)` — search globally or in one chat.
-- `telegram_send_message(chat_id, text)` — send text (**write**).
-- `telegram_edit_message(chat_id, message_id, text)` — edit one of your outgoing messages (**write**).
+- `telegram_send_message(chat_id, text, confirm)` — send text (**write**, requires `confirm=true`).
+- `telegram_edit_message(chat_id, message_id, text, confirm)` — edit one of your outgoing messages (**write**, requires `confirm=true`).
+
+Read tools are annotated `readOnlyHint`; write tools are annotated as non-read-only (`edit` additionally `destructiveHint`) so Codex approval policies can distinguish them automatically.
 
 ## Security model
 
@@ -38,6 +42,9 @@ The MCP contract is intentionally independent of the Telegram client library. Te
 - Telegram's local session database is ignored by git.
 - Reads are enabled by default.
 - Writes are disabled by default with `TELEGRAM_ALLOW_WRITES=false`.
+- Optional chat allowlist: set `TELEGRAM_WRITE_CHAT_ALLOWLIST=chat_id1,chat_id2` to permit send/edit only to those chats.
+- Every send/edit attempt (allowed **and** denied) is appended to a local JSONL audit trail (`TELEGRAM_AUDIT_LOG_PATH`, default `.telegram/audit.jsonl`; `"off"` disables it). Audit records contain a short text preview, never credentials.
+- Write tools require an explicit `confirm=true` argument on top of Codex/app approval prompts.
 - Codex is configured to prompt before `telegram_send_message` and `telegram_edit_message`.
 - Never commit `.env`, `*.session`, login codes, or Telegram 2FA passwords.
 
@@ -81,6 +88,9 @@ TELEGRAM_API_HASH=your_api_hash
 TELEGRAM_PHONE=+79990000000
 TELEGRAM_SESSION_PATH=.telegram/codex
 TELEGRAM_ALLOW_WRITES=false
+# Optional safety extras:
+# TELEGRAM_WRITE_CHAT_ALLOWLIST=777000,123456789
+# TELEGRAM_AUDIT_LOG_PATH=.telegram/audit.jsonl   # or "off" to disable
 ```
 
 ## 3. Authorize the Telegram user account once
@@ -186,9 +196,12 @@ Restart Codex/MCP, then test only against a safe chat (for example Saved Message
 
 Expected behavior:
 
-- `telegram_send_message` → Codex prompts for approval.
-- `telegram_edit_message` → Codex prompts for approval.
+- `telegram_whoami` → shows `allow_writes=true`, your user id, allowlist and audit path.
+- `telegram_send_message` → Codex prompts for approval; the tool call also carries `confirm=true`.
+- `telegram_edit_message` → Codex prompts for approval; the tool call also carries `confirm=true`.
+- send/edit to a chat outside `TELEGRAM_WRITE_CHAT_ALLOWLIST` (when set) → rejected by the MCP server.
 - editing an incoming/other person's message → rejected by the MCP server.
+- every attempt appears in `TELEGRAM_AUDIT_LOG_PATH` with `status: ok|denied`.
 
 `PASS-WRITE` means send and edit work only after explicit approval.
 
@@ -204,6 +217,7 @@ A bot cannot act as your normal personal Telegram account or automatically acces
 - [x] Guarded send/edit tools.
 - [x] Safety regression tests for disabled writes and edit ownership.
 - [x] Exact local Codex MCP configuration and per-tool approvals.
+- [x] `telegram_whoami` status tool, JSONL audit trail, write chat allowlist, `confirm` guard, MCP tool annotations.
 - [ ] Run `PASS-READ` against a real Telegram account.
 - [ ] Run `PASS-WRITE` against a safe test chat.
 - [ ] Add broader mocked gateway/MCP integration tests.

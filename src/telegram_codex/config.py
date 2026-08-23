@@ -11,10 +11,30 @@ class ConfigurationError(RuntimeError):
     pass
 
 
+_AUDIT_OFF_VALUES = {"off", "none", "disabled", "0", "false", ""}
+
+
 def _as_bool(value: str | None, *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_allowlist(value: str | None) -> frozenset[int] | None:
+    if value is None or not value.strip():
+        return None
+    ids: set[int] = set()
+    for part in value.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        try:
+            ids.add(int(chunk))
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"TELEGRAM_WRITE_CHAT_ALLOWLIST must contain comma-separated integers, got {chunk!r}"
+            ) from exc
+    return frozenset(ids) if ids else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +44,8 @@ class Settings:
     phone: str | None
     session_path: Path
     allow_writes: bool = False
+    write_chat_allowlist: frozenset[int] | None = None
+    audit_log_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,10 +67,21 @@ class Settings:
         ).expanduser()
         session_path.parent.mkdir(parents=True, exist_ok=True)
 
+        audit_raw = os.getenv("TELEGRAM_AUDIT_LOG_PATH", ".telegram/audit.jsonl")
+        if audit_raw.strip().lower() in _AUDIT_OFF_VALUES:
+            audit_log_path: Path | None = None
+        else:
+            audit_log_path = Path(audit_raw).expanduser()
+            audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+
         return cls(
             api_id=api_id,
             api_hash=api_hash,
             phone=os.getenv("TELEGRAM_PHONE"),
             session_path=session_path,
             allow_writes=_as_bool(os.getenv("TELEGRAM_ALLOW_WRITES")),
+            write_chat_allowlist=_parse_allowlist(
+                os.getenv("TELEGRAM_WRITE_CHAT_ALLOWLIST")
+            ),
+            audit_log_path=audit_log_path,
         )
