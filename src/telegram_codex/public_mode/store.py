@@ -28,6 +28,8 @@ class BusinessEventStore(Protocol):
         limit: int = 20,
     ) -> list[BusinessMessageEvent]: ...
 
+    async def purge(self, tenant_id: str, connection_id: str) -> None: ...
+
 
 class NullBusinessEventStore:
     """Default privacy mode: process live events without retaining message bodies."""
@@ -53,6 +55,9 @@ class NullBusinessEventStore:
         limit: int = 20,
     ) -> list[BusinessMessageEvent]:
         return []
+
+    async def purge(self, tenant_id: str, connection_id: str) -> None:
+        return None
 
 
 @dataclass(slots=True)
@@ -113,3 +118,6 @@ class MemoryTTLBusinessEventStore:
         recent = await self.recent(tenant_id, connection_id, limit=10_000)
         matches = [event for event in recent if needle in event.text.casefold()]
         return matches[: max(0, limit)]
+
+    async def purge(self, tenant_id: str, connection_id: str) -> None:
+        self._events.pop((tenant_id, connection_id), None)
