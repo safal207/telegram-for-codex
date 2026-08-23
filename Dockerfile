@@ -11,6 +11,7 @@ COPY src ./src
 
 RUN pip install --no-cache-dir .
 
+VOLUME ["/data/telegram"]
 EXPOSE 8000
 
 CMD ["telegram-codex-remote"]
