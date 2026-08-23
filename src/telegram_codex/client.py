@@ -7,6 +7,7 @@ from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 
 from .config import Settings
 
@@ -31,11 +32,17 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _session_for(settings: Settings):
+    if settings.session_string:
+        return StringSession(settings.session_string)
+    return str(settings.session_path)
+
+
 class TelegramGateway:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = TelegramClient(
-            str(settings.session_path), settings.api_id, settings.api_hash
+            _session_for(settings), settings.api_id, settings.api_hash
         )
 
     async def ensure_ready(self) -> TelegramClient:
@@ -43,7 +50,8 @@ class TelegramGateway:
             await self.client.connect()
         if not await self.client.is_user_authorized():
             raise TelegramNotAuthorized(
-                "Telegram session is not authorized. Run `telegram-codex-auth` first."
+                "Telegram session is not authorized. Run `telegram-codex-auth` for a file "
+                "session or `telegram-codex-auth-string` to generate a cloud session secret."
             )
         return self.client
 
@@ -111,7 +119,12 @@ class TelegramGateway:
         authorized = bool(await self.client.is_user_authorized())
         info: dict[str, Any] = {
             "authorized": authorized,
-            "session_path": str(self.settings.session_path),
+            "session_mode": self.settings.session_mode,
+            "session_path": (
+                str(self.settings.session_path)
+                if self.settings.session_mode == "file"
+                else None
+            ),
             "allow_writes": self.settings.allow_writes,
             "write_chat_allowlist": (
                 sorted(self.settings.write_chat_allowlist)
@@ -125,7 +138,10 @@ class TelegramGateway:
             ),
         }
         if not authorized:
-            info["hint"] = "Run `telegram-codex-auth` to authorize the local session."
+            info["hint"] = (
+                "Authorize a file session with `telegram-codex-auth` or generate a cloud "
+                "StringSession with `telegram-codex-auth-string`."
+            )
             return info
         me = await self.client.get_me()
         info["user_id"] = int(me.id)
