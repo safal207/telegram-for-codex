@@ -2,30 +2,50 @@
 
 ## Product principle
 
-The public product should **not** behave like a hosted copy of the user's Telegram client.
+The product has two intentionally different trust models:
+
+1. **Personal Mode** — private/self-hosted user-client access for one power user.
+2. **Public Mode** — Telegram Business Bot delegation for a scalable multi-user service.
+
+Do not turn Personal Mode into the public architecture.
 
 For the public / Plugin Directory path, prefer Telegram's official **Connected Business Bot** model. The user connects a bot, grants explicit rights, and can pause or disconnect it. This avoids storing a personal MTProto login session for every user.
 
-Keep the existing Telethon/MTProto implementation as a separate **Personal Mode** for private/self-hosted power users who need broader personal-account access.
+Keep the existing Telethon/MTProto implementation as a separate Personal Mode for private/self-hosted users who need broader personal-account access.
+
+## Why Telegram is not just another database connector
+
+The hard problem is not where to put Telegram messages. The hard problem is the trust boundary.
+
+A personal Telegram user session behaves much more like another logged-in device credential than a narrow OAuth token. A mass-market service built from hosted user sessions would need to protect one powerful long-lived credential per customer.
+
+Telegram Business delegation gives us a cleaner model:
+
+- Telegram owns connection lifecycle;
+- Telegram owns recipient selection;
+- Telegram owns business rights;
+- Telegram can pause or revoke the connection;
+- the service stores routing metadata rather than a customer's personal MTProto session.
 
 ## Two product modes
 
 ### 1. Public Mode — recommended for other users
 
-Use a Telegram Business connected bot.
-
 ```text
 ChatGPT / Codex
       |
-      | OpenAI app OAuth
+      | OpenAI/app OAuth
       v
 Telegram for ChatGPT API
       |
-      | user/account binding
+      | authenticated app_user_id
+      v
+Connection registry
+      |
+      | server-resolved business_connection_id + rights
       v
 Telegram Business Bot
       |
-      | business_connection_id + scoped rights
       v
 User's allowed Telegram chats
 ```
@@ -33,27 +53,29 @@ User's allowed Telegram chats
 Properties:
 
 - No Telegram phone OTP is stored by our service.
+- No Telegram 2FA password is handled by the public service.
 - No MTProto StringSession is stored per public user.
-- Telegram itself manages the business connection and its rights.
+- Telegram itself manages the Business connection and its rights.
 - User can pause a chat or disconnect the bot in Telegram.
 - Rights can be limited to only the operations we need.
-- The backend stores only the minimum connection metadata required to route requests.
-- Message bodies are fetched/processed on demand and are not mirrored into a permanent database by default.
+- The model never selects a tenant or `business_connection_id` as an authority decision.
+- Message retention defaults to **off**.
 
 Expected feature set:
 
-- receive new business messages;
-- show unread/recent connected conversations;
+- receive new Business messages;
+- surface recent connected conversations when retention/state permits;
 - draft a reply;
 - send/reply after ChatGPT confirmation;
-- edit/delete/mark-read only when Telegram grants that business right;
-- pause/disable automation per chat.
+- edit/delete/mark-read only when Telegram grants that Business right;
+- pause/disable automation per chat;
+- user-controlled recent-history retention when explicitly enabled.
 
-Important limitation: Public Mode is not intended to promise arbitrary full-history search across every personal chat. Telegram Business connections are a cleaner delegated integration, but their access model differs from a full user client.
+Important limitation: Public Mode is event-driven. It does not promise arbitrary full-history search across every old personal chat. Telegram starts sending Business updates according to the connection settings; broader personal history remains a Personal Mode capability.
 
 ### 2. Personal Mode — private/self-hosted
 
-Use the existing user-client path (Telethon today; TDLib is the stronger long-term client runtime).
+Use the existing user-client path (Telethon today; TDLib remains a possible stronger long-term client runtime).
 
 ```text
 User's private deployment
@@ -62,7 +84,7 @@ User's private deployment
       |
       +-- encrypted session credential
       |
-      +-- private MCP endpoint
+      +-- private authenticated MCP endpoint
 ```
 
 Properties:
@@ -70,8 +92,73 @@ Properties:
 - Designed for one user or a very small trusted deployment.
 - Can provide broader personal-account functionality than Business Bot mode.
 - Must never expose an unauthenticated MCP endpoint publicly.
-- Session credentials are bearer credentials and require encrypted storage / secret management.
+- Session credentials are bearer credentials and require secret management.
 - This mode is not the preferred foundation for a mass-market Plugin Directory product.
+
+## Seamless Public Mode onboarding
+
+The public UX should feel much closer to Gmail than to a developer tool.
+
+```text
+ChatGPT: Connect Telegram
+        |
+        | app OAuth establishes app_user_id
+        v
+Generate one-time link token
+        |
+        | retain only SHA-256; 10-minute TTL; one use
+        v
+Open t.me/<our_bot>?start=link_<token>
+        |
+        | Telegram identifies the person itself
+        v
+/start link_<token>
+        |
+        | app_user_id <-> telegram_user_id binding
+        v
+User enables our Business Bot
+and chooses recipients / rights in Telegram
+        |
+        v
+business_connection update
+        |
+        | current business_connection_id + rights
+        v
+Connected ✓
+```
+
+Public users never need to copy or type:
+
+- Telegram `api_id`;
+- Telegram `api_hash`;
+- Telegram login code into our app;
+- Telegram 2FA password into our app;
+- Telethon StringSession;
+- bot token.
+
+The Telegram bot deep-link start parameter is suited to carrying a short authentication/link token for connecting a Telegram identity to an account on another platform. Our raw token is returned once, not stored, expires, and cannot be reused.
+
+## Identity model
+
+Keep three identifiers separate:
+
+```text
+app_user_id             authenticated app/OpenAI identity
+telegram_user_id        Telegram person confirmed by Telegram
+business_connection_id  revocable Telegram delegation/routing id
+```
+
+The service stores a binding:
+
+```text
+app_user_id
+  -> telegram_user_id
+  -> current business_connection_id
+  -> enabled status
+  -> current BusinessBotRights
+```
+
+The model must never supply `app_user_id` or `business_connection_id` as authority. They come from authenticated server-side context and the connection registry.
 
 ## Public multi-user control plane
 
@@ -91,135 +178,208 @@ Properties:
                  |                             |
                  v                             v
         +--------+---------+          +--------+---------+
-        | Identity binding |          | Audit / consent  |
-        | OpenAI <-> user  |          | minimal metadata |
+        | Identity binding |          | Consent / audit  |
+        | OAuth <-> user   |          | minimal metadata |
         +--------+---------+          +------------------+
                  |
                  v
         +--------+-------------------------------+
-        | Telegram adapter                       |
-        | Public: Business Bot connection        |
-        | Private: Personal MTProto/TDLib mode   |
+        | PublicTelegramService                  |
+        | resolves connection server-side        |
         +--------+-------------------------------+
                  |
-                 v
-              Telegram
+          +------+-------+
+          |              |
+          v              v
+ Business Bot API    Event Store
+                    default: Null
+                    optional: encrypted TTL
+          |
+          v
+       Telegram
 ```
+
+## Capability model
+
+Telegram Business rights remain the source of truth:
+
+| Product action | Required Telegram right |
+| --- | --- |
+| send | `can_reply` |
+| edit | `can_reply` |
+| mark read | `can_read_messages` |
+| delete sent | `can_delete_sent_messages` or `can_delete_all_messages` |
+| delete arbitrary allowed message | `can_delete_all_messages` |
+
+Every write has two independent gates:
+
+```text
+ChatGPT/user approval
+        AND
+Telegram Business right
+```
+
+No action is allowed solely because the model requested it.
+
+## Event-driven message path
+
+Telegram sends Business lifecycle/message updates after connection, including new, edited and deleted Business messages.
+
+```text
+Telegram webhook
+      |
+      | verified ingress + idempotency
+      v
+Normalize business update
+      |
+      +-- connection update -> refresh/revoke registry
+      |
+      +-- new/edit message -> resolve connection -> app_user_id
+      |                         |
+      |                         +-- live processing
+      |                         +-- optional TTL retention
+      |
+      +-- delete update -> remove retained representation
+```
+
+A Telegram disconnect must immediately:
+
+1. revoke request routing;
+2. make all writes fail;
+3. purge any retained TTL history for that connection unless policy/legal requirements explicitly require otherwise.
+
+## Retention model
+
+### Default: no message-body retention
+
+```text
+Telegram update -> process -> discard body
+```
+
+The code uses `NullBusinessEventStore` as the privacy-first default contract.
+
+### Optional bounded recent history
+
+If the user explicitly enables searchable recent history:
+
+```text
+Telegram update
+   -> encrypt at rest
+   -> key by app_user_id + connection_id
+   -> strict TTL
+```
+
+Possible future product choices:
+
+- Live only / Off;
+- 24 hours;
+- 7 days;
+- 30 days.
+
+No unlimited retention by default. No cross-user corpus. No whole-history embedding index.
+
+## Tenant isolation
+
+All retained content is scoped by both tenant and connection:
+
+```text
+(app_user_id, business_connection_id)
+```
+
+The PublicTelegramService receives `app_user_id` from authenticated server context, resolves the current connection internally, and only then calls Telegram or the event store.
+
+The model-facing tool schema should contain business inputs such as `chat_id`, `message_id`, `text`, `query` — not tenant/connection authority selectors.
 
 ## What we store
 
 ### Public Mode
 
-Store only:
+Minimum durable metadata:
 
-- internal user/account id;
-- OpenAI app/OAuth binding;
-- Telegram `business_connection_id` and granted rights;
-- minimal routing metadata;
+- internal app user id;
+- OAuth/app binding;
+- Telegram user id required for binding;
+- current `business_connection_id`;
+- current granted rights / enabled status;
 - consent/version timestamps;
-- audit records for write actions;
-- optional short-lived encrypted cache with a strict TTL.
+- write audit records;
+- hashed pending link tokens until they expire;
+- optional encrypted TTL message events only if the user opts in.
 
 Do **not** store by default:
 
-- full Telegram message history;
-- contacts/address book replicas;
-- raw phone login codes;
-- Telegram 2FA passwords;
 - personal MTProto auth keys;
-- embeddings of entire Telegram histories.
+- Telegram phone login codes;
+- Telegram 2FA passwords;
+- full Telegram message history;
+- contacts/address-book replicas;
+- permanent embeddings of Telegram histories.
 
 ### Personal Mode
 
-Store only the encrypted Telegram session credential required to operate the private client plus minimal configuration/audit data.
+Store only the Telegram session credential required for the private client plus minimal configuration/audit data.
 
-## Seamless onboarding target
-
-### Public Mode
+## Public request path
 
 ```text
-Install Telegram plugin
-        -> Connect
-        -> Open Telegram
-        -> Enable/connect our Business Bot
-        -> Choose recipients/rights
-        -> Return to ChatGPT
-        -> Ready
+ChatGPT tool call
+     |
+     | OAuth access token
+     v
+MCP/API edge
+     |
+     | derive app_user_id
+     v
+PublicTelegramService
+     |
+     | server-side registry lookup
+     v
+current BusinessConnection
+     |
+     | policy check + user approval for writes
+     v
+Telegram Business Bot API
 ```
 
-No terminal. No `api_id`. No `api_hash`. No copy/paste session secret.
+## Public code boundary already scaffolded
 
-### Personal Mode
+Current branch contains:
 
-```text
-Open private /connect page
-        -> phone
-        -> Telegram code
-        -> optional 2FA
-        -> Ready
-```
+- `public_mode/models.py` — rights, connection, event and retention models;
+- `public_mode/policy.py` — rights-to-action enforcement;
+- `public_mode/business_bot.py` — Telegram Bot API Business adapter;
+- `public_mode/webhook.py` — Business update normalization;
+- `public_mode/store.py` — Null store + tenant-isolated TTL development store;
+- `public_mode/linking.py` — one-time hashed Telegram deep-link tokens;
+- `public_mode/connections.py` — app/Telegram/connection registry + revocation;
+- `public_mode/service.py` — tenant-safe server-side routing and disconnect purge.
 
-Still no terminal, but this remains the private/power-user path.
+These Public Mode modules are deliberately not exposed as public MCP tools yet. MCP exposure waits for real OAuth/tenant middleware and verified Telegram webhook ingress.
 
-## Safety model
+## Remaining production boundary
 
-- Reads can run automatically only inside the granted source boundary.
-- Send/edit/delete remain confirmation-gated in ChatGPT.
-- Server also checks Telegram-side rights before every write.
-- Every write is logged with actor, connection, chat, action, timestamp and result.
-- User can disconnect the integration at any time.
-- Revocation must invalidate our binding immediately.
-- No action is allowed solely because the model requested it.
+Before Public Mode becomes a real multi-user service:
+
+- create/configure the real Telegram business-ready bot / Secretary Mode;
+- verified Telegram webhook ingress with webhook secret and replay/idempotency protection;
+- app/OpenAI OAuth and tenant identity middleware;
+- transactional encrypted persistence for identity, connection, consent and optional TTL events;
+- user-visible retention controls;
+- disconnect/delete/export endpoints;
+- write audit, rate limits and Telegram flood protection;
+- legal/privacy review against Telegram and OpenAI terms;
+- Plugin Directory submission and supported-surface validation.
 
 ## Privacy and AI-use boundary
 
-Telegram's API and content-licensing terms impose strong privacy obligations and restrictions around use of Telegram data for AI/ML. A public product must therefore be designed around explicit user intent, narrow source boundaries, minimal retention, and legal review before Plugin Directory submission.
+Telegram's API/content terms impose strong privacy obligations and restrictions around use of Telegram data for AI/ML. Public Mode should therefore be designed around explicit user intent, narrow connected-chat boundaries, minimal retention and legal review before public submission.
 
-Do not build a global Telegram corpus, search index or long-lived embedding store.
+Do not build a global Telegram corpus, whole-history search index or long-lived embedding store.
 
-For any AI-assisted handling of content, keep the processing contextual and user-directed, with the smallest practical data window. Public release should not proceed until the Telegram terms are reviewed against the exact ChatGPT data flow and consent model.
-
-## Why this is better than one hosted Telethon cluster
-
-A hosted Telethon cluster would require us to safeguard a long-lived personal Telegram session for every user. That session behaves much more like a logged-in device credential than a normal revocable OAuth access token.
-
-The Business Bot route moves delegation, scopes, pause/disconnect controls and business identity into Telegram's own supported model. That gives us a much cleaner trust boundary for a multi-user product.
-
-## Roadmap
-
-### Phase A — Personal alpha
-
-- Keep PR #3 private-only.
-- Finish PASS-CONNECT / PASS-READ.
-- Protect MCP with a trusted boundary.
-
-### Phase B — Public adapter
-
-- Add `telegram_business` adapter.
-- Create Telegram business-ready bot.
-- Handle `business_connection_id` lifecycle.
-- Map Telegram business rights to MCP tool availability.
-- Implement receive/send/edit/read/delete only when rights permit.
-
-### Phase C — Multi-user SaaS control plane
-
-- OpenAI app OAuth.
-- Tenant/user identity binding.
-- Encrypted connection metadata store.
-- Revocation/deletion endpoints.
-- Consent ledger and write audit.
-- Rate limits / abuse controls / flood protection.
-
-### Phase D — Plugin Directory
-
-- Privacy policy + terms.
-- Security review.
-- Telegram terms review for exact AI data flow.
-- OpenAI app/plugin submission.
-- Mobile enablement when the supported ChatGPT surface allows it.
+For AI-assisted handling of content, keep processing contextual and user-directed, with the smallest practical data window.
 
 ## Decision
 
-**Do not turn Personal Mode into the public architecture.**
+**Personal Mode proves the full-power UX. Public Mode is the scalable product.**
 
-Use Personal Mode to prove the UX. Build Public Mode on Telegram Business connected bots so that other users can connect with much less credential risk and a far more seamless onboarding experience.
+Public Mode uses Telegram Business connected bots, one-time Telegram identity linking, server-side tenant resolution, rights-derived capabilities and no-store-by-default message processing. That gives other users a substantially safer and more seamless onboarding path without turning our infrastructure into a vault of personal Telegram device credentials.
