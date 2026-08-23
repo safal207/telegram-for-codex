@@ -1,12 +1,9 @@
-import inspect
-
 from telegram_codex import remote_server
 
 
-def test_fastmcp_run_supports_remote_keywords() -> None:
-    parameters = inspect.signature(remote_server.mcp.run).parameters
+def test_fastmcp_exposes_remote_settings() -> None:
+    settings = remote_server.mcp.settings
     for name in (
-        "transport",
         "host",
         "port",
         "streamable_http_path",
@@ -14,7 +11,7 @@ def test_fastmcp_run_supports_remote_keywords() -> None:
         "json_response",
         "transport_security",
     ):
-        assert name in parameters, f"FastMCP.run is missing expected keyword: {name}"
+        assert hasattr(settings, name), f"FastMCP settings missing expected field: {name}"
 
 
 def test_remote_server_runs_streamable_http(monkeypatch) -> None:
@@ -34,24 +31,22 @@ def test_remote_server_runs_streamable_http(monkeypatch) -> None:
 
     remote_server.main()
 
-    security = calls.pop("transport_security")
-    assert security.enable_dns_rebinding_protection is True
-    assert security.allowed_hosts == [
+    settings = remote_server.mcp.settings
+    assert settings.host == "0.0.0.0"
+    assert settings.port == 9123
+    assert settings.streamable_http_path == "/mcp"
+    assert settings.stateless_http is True
+    assert settings.json_response is True
+    assert settings.transport_security.enable_dns_rebinding_protection is True
+    assert settings.transport_security.allowed_hosts == [
         "telegram.example.com",
         "telegram.example.com:*",
     ]
-    assert security.allowed_origins == [
+    assert settings.transport_security.allowed_origins == [
         "https://chatgpt.com",
         "https://chat.openai.com",
     ]
-    assert calls == {
-        "transport": "streamable-http",
-        "host": "0.0.0.0",
-        "port": 9123,
-        "streamable_http_path": "/mcp",
-        "stateless_http": True,
-        "json_response": True,
-    }
+    assert calls == {"transport": "streamable-http"}
 
 
 def test_csv_env_uses_defaults(monkeypatch) -> None:
