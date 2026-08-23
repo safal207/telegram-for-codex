@@ -7,9 +7,16 @@ import stat
 import time
 from types import SimpleNamespace
 
+from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
-from telegram_codex import connect_web, remote_server
+from telegram_codex import connect_web
+
+
+def _test_app():
+    mcp = FastMCP("connect-test")
+    connect_web.install_connect_routes(mcp)
+    return mcp.streamable_http_app()
 
 
 def test_persist_session_string_is_private_and_not_returned(tmp_path, monkeypatch) -> None:
@@ -29,9 +36,8 @@ def test_persist_session_string_is_private_and_not_returned(tmp_path, monkeypatc
 
 def test_connect_page_is_mobile_visible_but_start_requires_private_key(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_CONNECT_TOKEN", "correct-key")
-    app = remote_server.mcp.streamable_http_app()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(_test_app(), base_url="http://localhost") as client:
         page = client.get("/connect", headers={"host": "localhost"})
         assert page.status_code == 200
         assert "Connect Telegram" in page.text
@@ -48,9 +54,8 @@ def test_connect_page_is_mobile_visible_but_start_requires_private_key(monkeypat
 
 def test_all_connect_actions_fail_closed_when_token_is_not_configured(monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_CONNECT_TOKEN", raising=False)
-    app = remote_server.mcp.streamable_http_app()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(_test_app(), base_url="http://localhost") as client:
         cases = (
             ("/connect/start", {"phone": "+79991234567"}),
             ("/connect/code", {"flow_id": "x", "code": "12345"}),
@@ -68,9 +73,8 @@ def test_all_connect_actions_fail_closed_when_token_is_not_configured(monkeypatc
 
 def test_code_and_password_endpoints_reject_wrong_private_key(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_CONNECT_TOKEN", "correct-key")
-    app = remote_server.mcp.streamable_http_app()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(_test_app(), base_url="http://localhost") as client:
         for path, payload in (
             ("/connect/code", {"flow_id": "x", "code": "12345"}),
             ("/connect/password", {"flow_id": "x", "password": "secret"}),
