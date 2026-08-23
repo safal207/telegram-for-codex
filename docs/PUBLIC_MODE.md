@@ -13,7 +13,7 @@ Official references:
 ```text
 ChatGPT: Connect Telegram
         |
-        | OpenAI app OAuth establishes app_user_id
+        | OpenAI/app OAuth establishes app_user_id
         v
 Generate one-time link token (10 min, one use)
         |
@@ -106,7 +106,7 @@ That means Public Mode can work extremely well for current and future conversati
 ```text
 Telegram update
    -> normalize
-   -> answer current user request / update unread state
+   -> answer current user request / update transient state
    -> discard body
 ```
 
@@ -132,6 +132,8 @@ Example product options later:
 
 No unlimited retention should be the default. No global cross-user search index or whole-history embeddings.
 
+Edits replace the retained representation of a message. Telegram deletion updates remove retained message bodies. Disconnect purges retained history for that Business connection.
+
 ## Multi-user isolation
 
 Every retained event key includes both:
@@ -156,9 +158,10 @@ Current branch contains:
 - `public_mode/policy.py` — Telegram-rights enforcement;
 - `public_mode/business_bot.py` — Bot API adapter for connection lookup, send, edit, mark-read and delete;
 - `public_mode/webhook.py` — business update normalization;
-- `public_mode/store.py` — no-store default + tenant-isolated TTL development store;
+- `public_mode/store.py` — no-store default + tenant-isolated TTL development store with edit/delete/purge semantics;
 - `public_mode/linking.py` — hashed one-time Telegram deep-link tokens;
-- `public_mode/connections.py` — app user ↔ Telegram user ↔ business connection registry.
+- `public_mode/connections.py` — app user ↔ Telegram user ↔ business connection registry;
+- `public_mode/service.py` — authenticated-user routing, recent/search access, writes and disconnect purge.
 
 These modules are deliberately not exposed as public MCP tools yet. MCP exposure waits for real app OAuth and tenant identity so a caller can never choose another user's `business_connection_id` directly.
 
@@ -173,13 +176,13 @@ MCP/API edge
      |
      | resolve app_user_id from token
      v
-Connection registry
+PublicTelegramService
      |
-     | load current business connection + rights
+     | resolve current Business connection server-side
      v
 Policy engine
      |
-     | user confirmation for writes
+     | Telegram rights + user confirmation for writes
      v
 Telegram Business Bot API
 ```
@@ -198,11 +201,15 @@ Parse business update
      +-- business_connection -> update/revoke connection registry
      |
      +-- message event -> resolve connection -> tenant
-                              |
-                              +-- ephemeral processing (default)
-                              or
-                              +-- encrypted TTL event store (opt-in)
+     |                         |
+     |                         +-- ephemeral processing (default)
+     |                         or
+     |                         +-- encrypted TTL event store (opt-in)
+     |
+     +-- delete event -> delete retained message bodies
 ```
+
+A Telegram disconnect must revoke request routing and purge optional retained history immediately.
 
 ## Remaining production work
 
