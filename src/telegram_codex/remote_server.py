@@ -4,7 +4,12 @@ import os
 
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .server import mcp
+from .connect_web import install_connect_routes
+from .server import mcp, reset_gateway
+
+# Plain HTTP authorization routes live next to /mcp in the same FastMCP app.
+# They are protected by TELEGRAM_CONNECT_TOKEN and should only be exposed over HTTPS.
+install_connect_routes(mcp, reset_gateway)
 
 
 def _csv_env(name: str, default: str) -> list[str]:
