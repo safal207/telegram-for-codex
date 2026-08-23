@@ -23,6 +23,7 @@ dev = [
 [project.scripts]
 telegram-codex = "telegram_codex.server:main"
 telegram-codex-auth = "telegram_codex.auth:main"
+telegram-codex-auth-string = "telegram_codex.auth_string:main"
 telegram-codex-remote = "telegram_codex.remote_server:main"
 
 [tool.hatch.build.targets.wheel]
