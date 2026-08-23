@@ -28,6 +28,13 @@ class BusinessEventStore(Protocol):
         limit: int = 20,
     ) -> list[BusinessMessageEvent]: ...
 
+    async def remove_messages(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        message_ids: tuple[int, ...],
+    ) -> None: ...
+
     async def purge(self, tenant_id: str, connection_id: str) -> None: ...
 
 
@@ -55,6 +62,14 @@ class NullBusinessEventStore:
         limit: int = 20,
     ) -> list[BusinessMessageEvent]:
         return []
+
+    async def remove_messages(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        message_ids: tuple[int, ...],
+    ) -> None:
+        return None
 
     async def purge(self, tenant_id: str, connection_id: str) -> None:
         return None
@@ -86,6 +101,11 @@ class MemoryTTLBusinessEventStore:
     async def append(self, tenant_id: str, event: BusinessMessageEvent) -> None:
         key = (tenant_id, event.connection_id)
         self._prune(key)
+        # Telegram edit updates replace the retained representation of the same
+        # message instead of creating duplicate search hits.
+        self._events[key] = [
+            item for item in self._events[key] if item.event.message_id != event.message_id
+        ]
         self._events[key].append(
             _StoredEvent(
                 event=event,
@@ -118,6 +138,16 @@ class MemoryTTLBusinessEventStore:
         recent = await self.recent(tenant_id, connection_id, limit=10_000)
         matches = [event for event in recent if needle in event.text.casefold()]
         return matches[: max(0, limit)]
+
+    async def remove_messages(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        message_ids: tuple[int, ...],
+    ) -> None:
+        key = (tenant_id, connection_id)
+        ids = set(message_ids)
+        self._events[key] = [item for item in self._events[key] if item.event.message_id not in ids]
 
     async def purge(self, tenant_id: str, connection_id: str) -> None:
         self._events.pop((tenant_id, connection_id), None)
