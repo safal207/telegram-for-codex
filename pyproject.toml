@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegram-for-codex"
+version = "0.2.1"
+description = "Use a real Telegram user account from ChatGPT and Codex through MCP."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "mcp>=1.29,<1.30",
+  "telethon>=1.40,<2",
+  "python-dotenv>=1.0,<2",
+  "starlette>=0.47,<2",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.3,<10",
+]
+
+[project.scripts]
+telegram-codex = "telegram_codex.server:main"
+telegram-codex-auth = "telegram_codex.auth:main"
+telegram-codex-auth-string = "telegram_codex.auth_string:main"
+telegram-codex-remote = "telegram_codex.remote_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telegram_codex"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
