@@ -1,4 +1,4 @@
-# Exact constraints resolved from .[dev] plus the hatchling build backend on
+# Exact constraints resolved from .[dev] plus the pinned build backends on
 # Python 3.12.13 with pip 26.2.1 (2026-08-26). This is a constraints file:
 # pyproject.toml remains the source of direct dependency requirements.
 # Regenerate and verify on Python 3.11/3.12 and Linux before changing a pin.
@@ -38,6 +38,7 @@ pywin32==312 ; sys_platform == "win32"
 referencing==0.37.0
 rpds-py==2026.6.3
 rsa==4.9.1
+setuptools==84.0.0
 sse-starlette==3.4.8
 starlette==1.6.0
 telethon==1.44.0

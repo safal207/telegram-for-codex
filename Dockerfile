@@ -8,7 +8,7 @@ WORKDIR /build
 COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY src ./src
 
-RUN python -m pip install --constraint constraints.txt hatchling==1.32.0 \
+RUN python -m pip install --constraint constraints.txt hatchling==1.32.0 setuptools==84.0.0 \
     && python -m pip wheel \
         --no-build-isolation \
         --constraint constraints.txt \
