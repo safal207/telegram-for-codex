@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "cwd": ".",
+      "command": "telegram-codex",
+      "env_vars": [
+        "TELEGRAM_API_ID",
+        "TELEGRAM_API_HASH",
+        "TELEGRAM_PHONE",
+        "TELEGRAM_SESSION_PATH",
+        "TELEGRAM_SESSION_STRING",
+        "TELEGRAM_SESSION_STRING_FILE",
+        "TELEGRAM_ALLOW_WRITES",
+        "TELEGRAM_WRITE_CHAT_ALLOWLIST",
+        "TELEGRAM_AUDIT_LOG_PATH"
+      ],
+      "default_tools_approval_mode": "prompt",
+      "tools": {
+        "telegram_whoami": {
+          "approval_mode": "auto"
+        },
+        "telegram_audit_log": {
+          "approval_mode": "auto"
+        },
+        "telegram_list_chats": {
+          "approval_mode": "auto"
+        },
+        "telegram_get_messages": {
+          "approval_mode": "auto"
+        },
+        "telegram_search_messages": {
+          "approval_mode": "auto"
+        },
+        "telegram_send_message": {
+          "approval_mode": "prompt"
+        },
+        "telegram_edit_message": {
+          "approval_mode": "prompt"
+        }
+      }
+    }
+  }
+}

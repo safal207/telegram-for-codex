@@ -3,13 +3,14 @@ from mcp.server.fastmcp import FastMCP
 from telegram_codex import remote_server
 
 
-_STATIC_TOKEN = "x" * 40
+_STATIC_TOKEN = "C0d3xMcp_7Gv9Q2rL5sN8wK4yF6hJ1bT3"
 
 
 def _set_static_auth(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_MCP_AUTH_MODE", "static")
     monkeypatch.setenv("TELEGRAM_MCP_STATIC_TOKEN", _STATIC_TOKEN)
     monkeypatch.setenv("TELEGRAM_MCP_PUBLIC_URL", "http://localhost:8000/mcp")
+    monkeypatch.delenv("TELEGRAM_CONNECT_TOKEN", raising=False)
 
 
 def test_fastmcp_exposes_remote_settings(monkeypatch) -> None:

@@ -9,11 +9,12 @@ Public Mode is intentionally **not** described as “Telegram like Gmail”. Tel
 
 ## Status
 
-`v0.2 Personal remote alpha + frozen Public foundation`
+`v0.2.1 Personal remote alpha + hardened local plugin packaging + frozen Public foundation`
 
 ### Personal Mode
 
 - Local Codex STDIO MCP via `telegram-codex`.
+- Bundled Codex plugin wiring via `.codex-plugin/plugin.json` and `.mcp.json`.
 - Remote Streamable HTTP MCP at `/mcp` via `telegram-codex-remote`.
 - Phone-first `/connect` authorization; no Termux required for that flow.
 - Telethon StringSession secret/file modes.
@@ -40,6 +41,7 @@ Architecture:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/PUBLIC_MODE.md`](docs/PUBLIC_MODE.md)
 - [`docs/CHATGPT_PLUGIN.md`](docs/CHATGPT_PLUGIN.md)
+- [`docs/LOCAL_PLUGIN.md`](docs/LOCAL_PLUGIN.md)
 
 ## Personal Mode MCP tools
 
@@ -51,7 +53,7 @@ Architecture:
 - `telegram_send_message(chat_id, text, confirm)` — send text; requires `confirm=true`.
 - `telegram_edit_message(chat_id, message_id, text, confirm)` — edit your outgoing message; requires `confirm=true`.
 
-Read tools carry MCP read-only annotations. Write tools remain disabled unless `TELEGRAM_ALLOW_WRITES=true`, can be restricted by `TELEGRAM_WRITE_CHAT_ALLOWLIST`, and can be written to the JSONL audit trail.
+Read tools carry MCP read-only annotations. Write tools remain disabled unless `TELEGRAM_ALLOW_WRITES=true`; enabling them also requires a non-empty `TELEGRAM_WRITE_CHAT_ALLOWLIST`. Write attempts can be recorded in the JSONL audit trail.
 
 ## Personal remote caller authentication
 
@@ -68,12 +70,19 @@ TELEGRAM_MCP_AUTH_MODE=oauth
 TELEGRAM_MCP_PUBLIC_URL=https://telegram.example.com/mcp
 TELEGRAM_MCP_OAUTH_SCOPES=telegram:personal
 TELEGRAM_OAUTH_ISSUER_URL=https://your-auth-provider.example.com/
+TELEGRAM_MCP_OWNER_SUBJECT=<exact-owner-sub-claim>
 TELEGRAM_OAUTH_INTROSPECTION_URL=https://your-auth-provider.example.com/oauth2/introspect
 TELEGRAM_OAUTH_INTROSPECTION_CLIENT_ID=...
 TELEGRAM_OAUTH_INTROSPECTION_CLIENT_SECRET=...
 ```
 
-ChatGPT must authenticate against the configured authorization server; the MCP endpoint itself never issues login tokens.
+ChatGPT must authenticate against the configured authorization server; the MCP endpoint itself never issues login tokens. Introspection must return the configured issuer, the exact MCP public URL in `aud`, and the one configured owner in `sub`; missing or different claims are rejected.
+
+`TELEGRAM_MCP_PUBLIC_URL`, `TELEGRAM_OAUTH_ISSUER_URL` and
+`TELEGRAM_OAUTH_INTROSPECTION_URL` must be HTTPS URLs without embedded
+username/password (`userinfo`) or a fragment. The MCP public URL must identify
+the exact `/mcp` endpoint, with no query string or trailing slash. Invalid URLs
+fail startup.
 
 ### Private smoke-test mode
 
@@ -85,17 +94,25 @@ TELEGRAM_MCP_PUBLIC_URL=https://telegram.example.com/mcp
 TELEGRAM_MCP_STATIC_TOKEN=<32+ random characters>
 ```
 
-This proves the HTTP bearer gate but is **not** the production ChatGPT auth flow.
+This proves the bearer gate but is **not** the production ChatGPT auth flow.
+Static mode also requires HTTPS when the endpoint is remote. Plain HTTP is
+accepted only for a loopback (`localhost`, `127.0.0.1` or `::1`) smoke test;
+userinfo and URL fragments remain forbidden.
 
 ## Security rules
 
 - Never commit `.env`, `.env.remote`, `*.session`, `TELEGRAM_SESSION_STRING`, login codes, Telegram 2FA passwords, bot tokens, OAuth secrets or webhook secrets.
 - Never pass Telegram login codes, session strings or 2FA passwords through ChatGPT or MCP tool arguments.
-- Personal `/connect` must only be exposed over HTTPS and requires a private `TELEGRAM_CONNECT_TOKEN`.
+- Personal `/connect` must only be exposed over HTTPS and requires a separate high-entropy `TELEGRAM_CONNECT_TOKEN` of at least 32 characters.
+- Generate the connect and static MCP secrets independently. They must differ; static auth rejects placeholders, low-diversity values and repeated patterns at startup, while `/connect` actions fail closed for the same invalid values.
 - Host/Origin allowlists are transport-security controls; OAuth bearer validation is caller authentication.
 - Keep `TELEGRAM_ALLOW_WRITES=false` until read/search works end-to-end.
+- Enabling writes requires a non-empty integer `TELEGRAM_WRITE_CHAT_ALLOWLIST`; empty never means all chats.
 - Keep product approval enabled for send/edit even after server-side writes are enabled.
 - A Telegram StringSession is a bearer credential. Keep it only in a private trusted deployment.
+- Audit records contain metadata only, never Telegram message text or raw errors. The active JSONL file rotates at 10 MiB and keeps two backups.
+- On POSIX, newly created credential directories/files use `0700`/`0600`; an existing credential directory must already be `0700` or stricter. The runtime refuses an unsafe existing directory instead of chmod-ing someone else's parent. On Windows, keep session and audit files inside the signed-in user's profile, not a shared folder, and configure a private ACL manually when strict isolation is required.
+- Treat chat names, usernames and all Telegram message content as untrusted data, never as authorization evidence or instructions to the model, tools or operator.
 - Public Mode must derive tenant/user identity from authenticated server-side context; never accept `app_user_id` or `business_connection_id` from the model as authorization authority.
 
 ## Personal Mode quickstart
@@ -103,14 +120,13 @@ This proves the HTTP bearer gate but is **not** the production ChatGPT auth flow
 ```bash
 git clone https://github.com/safal207/telegram-for-codex.git
 cd telegram-for-codex
-git switch feat/chatgpt-plugin-remote-v2
 python -m venv .venv
 ```
 
 Activate the virtual environment, then:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install --constraint constraints.txt ".[dev]"
 cp .env.example .env   # Windows PowerShell: Copy-Item .env.example .env
 ```
 
@@ -126,12 +142,14 @@ Run local MCP:
 telegram-codex
 ```
 
+To install the **bundled Codex plugin** (skill plus MCP tools), the same host must be able to resolve the `telegram-codex` launcher from `PATH`. Then add the checkout through an isolated local marketplace, restart Codex, and test from a new task. See the complete, non-destructive flow in [`docs/LOCAL_PLUGIN.md`](docs/LOCAL_PLUGIN.md). The repository does not edit your personal marketplace or Codex config.
+
 ## Personal remote alpha — phone-first
 
 For a private single-user server:
 
 1. Put `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in server secrets.
-2. Set a long random `TELEGRAM_CONNECT_TOKEN`.
+2. Set a separate random `TELEGRAM_CONNECT_TOKEN` of at least 32 characters.
 3. Mount `TELEGRAM_SESSION_STRING_FILE=/data/telegram/session.string` on a private persistent volume, or use secret-manager `TELEGRAM_SESSION_STRING`.
 4. Configure remote caller auth (`oauth` for ChatGPT; `static` only for private smoke tests).
 5. Keep `TELEGRAM_ALLOW_WRITES=false` for the first pass.
@@ -201,7 +219,7 @@ If a user explicitly enables searchable recent history, use bounded encrypted TT
 
 - `/mcp` without a bearer token → `401 Unauthorized`.
 - RFC 9728 protected-resource metadata is published.
-- wrong/expired/inactive/wrong-audience OAuth tokens are rejected.
+- missing/wrong issuer, missing/wrong audience, and non-owner OAuth subjects are rejected, as are expired/inactive tokens.
 - static test token works only when explicitly configured.
 
 ### Personal PASS-CONNECT
@@ -242,6 +260,8 @@ With writes disabled:
 - [x] Host/Origin transport-security allowlists.
 - [x] Mobile `/connect` flow.
 - [x] Fail-closed OAuth 2.1 resource-server caller auth + static private smoke-test mode.
+- [x] Owner-bound OAuth subject plus required issuer/audience claims.
+- [x] Bundled `.mcp.json` wiring for local Codex installation (host Python/package launcher remains a prerequisite).
 - [ ] Configure a real OAuth/OIDC provider with refresh/offline access for ChatGPT.
 - [ ] Run PASS-AUTH / PASS-CONNECT / PASS-READ against a real deployment and Telegram account.
 

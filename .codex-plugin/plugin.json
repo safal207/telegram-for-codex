@@ -1,6 +1,6 @@
 {
   "name": "telegram-for-codex",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read, search, send, and edit Telegram messages from ChatGPT and Codex.",
   "author": {
     "name": "Aleksey Safonov",
@@ -11,6 +11,7 @@
   "license": "MIT",
   "keywords": ["telegram", "messaging", "productivity", "mcp"],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Telegram",
     "shortDescription": "Use Telegram without leaving the chat",

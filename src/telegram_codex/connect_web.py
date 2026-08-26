@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import logging
 import os
 import secrets
 import time
@@ -21,11 +23,30 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 
-from .config import Settings
+from .config import (
+    ConfigurationError,
+    Settings,
+    _ensure_private_directory,
+    _harden_private_file,
+    validate_high_entropy_secret,
+)
 
 _FLOW_TTL_SECONDS = 10 * 60
 _MAX_ACTIVE_FLOWS = 5
 _flows: dict[str, "AuthFlow"] = {}
+logger = logging.getLogger(__name__)
+
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+_CONNECT_PAGE_HEADERS = {
+    **_NO_STORE_HEADERS,
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 
 
 @dataclass(slots=True)
@@ -34,46 +55,92 @@ class AuthFlow:
     phone: str
     phone_code_hash: str
     created_at: float
+    closed: bool = False
+
+
+def _valid_connect_token(value: str) -> bool:
+    try:
+        validate_high_entropy_secret(value, "TELEGRAM_CONNECT_TOKEN")
+    except ConfigurationError:
+        return False
+    return True
 
 
 def _authorized(request: Request) -> bool:
-    expected = os.getenv("TELEGRAM_CONNECT_TOKEN", "")
+    expected = os.getenv("TELEGRAM_CONNECT_TOKEN", "").strip()
     supplied = request.headers.get("x-telegram-connect-token", "")
-    return bool(expected) and bool(supplied) and secrets.compare_digest(expected, supplied)
+    if not _valid_connect_token(expected) or not supplied:
+        return False
+    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
+    return secrets.compare_digest(expected_digest, supplied_digest)
 
 
 def _session_store_path() -> Path:
-    raw = os.getenv("TELEGRAM_SESSION_STRING_FILE", ".telegram/remote.session.string")
+    raw = os.getenv("TELEGRAM_SESSION_STRING_FILE", "").strip()
+    if not raw:
+        raw = ".telegram/remote.session.string"
     return Path(raw).expanduser()
 
 
 def _persist_session_string(value: str) -> Path:
     path = _session_store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(value, encoding="utf-8")
+    _ensure_private_directory(path.parent)
+    _harden_private_file(path)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    payload = value.encode("utf-8")
+    flags = (
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_WRONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+        descriptor = os.open(tmp, flags, 0o600)
+        try:
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("partial Telegram session write")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+            descriptor = None
+        _harden_private_file(tmp)
+        os.replace(tmp, path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+    _harden_private_file(path)
     # Make the new session available to this process immediately. It is never
     # returned to the browser or exposed through an MCP tool.
     os.environ["TELEGRAM_SESSION_STRING"] = value
     return path
 
 
+async def _discard_flow(flow_id: str, fallback: AuthFlow | None = None) -> None:
+    """Remove a login flow and best-effort disconnect its Telegram client."""
+    flow = _flows.pop(flow_id, None) or fallback
+    if flow is None or flow.closed:
+        return
+    flow.closed = True
+    try:
+        await flow.client.disconnect()
+    except Exception:
+        logger.warning("Could not disconnect Telegram login flow", exc_info=True)
+
+
 async def _prune_flows() -> None:
     cutoff = time.monotonic() - _FLOW_TTL_SECONDS
     expired = [flow_id for flow_id, flow in _flows.items() if flow.created_at < cutoff]
     for flow_id in expired:
-        flow = _flows.pop(flow_id, None)
-        if flow is not None:
-            await flow.client.disconnect()
+        await _discard_flow(flow_id)
 
 
 async def _json(request: Request) -> dict[str, Any]:
@@ -87,7 +154,15 @@ async def _json(request: Request) -> dict[str, Any]:
 
 
 def _error(message: str, status_code: int = 400) -> JSONResponse:
-    return JSONResponse({"ok": False, "error": message}, status_code=status_code)
+    return JSONResponse(
+        {"ok": False, "error": message},
+        status_code=status_code,
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+def _response(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:
+    return JSONResponse(payload, status_code=status_code, headers=_NO_STORE_HEADERS)
 
 
 async def _finish_login(
@@ -95,21 +170,21 @@ async def _finish_login(
     flow: AuthFlow,
     on_session_saved: Callable[[], Any] | None,
 ) -> JSONResponse:
-    me = await flow.client.get_me()
-    session_string = flow.client.session.save()
-    if not session_string:
-        return _error("Telegram authorized, but the session could not be serialized.", 500)
-
-    _persist_session_string(session_string)
-    await flow.client.disconnect()
-    _flows.pop(flow_id, None)
+    try:
+        me = await flow.client.get_me()
+        session_string = flow.client.session.save()
+        if not session_string:
+            return _error("Telegram authorized, but the session could not be serialized.", 500)
+        _persist_session_string(session_string)
+    finally:
+        await _discard_flow(flow_id, flow)
 
     if on_session_saved is not None:
         result = on_session_saved()
         if inspect.isawaitable(result):
             await result
 
-    return JSONResponse(
+    return _response(
         {
             "ok": True,
             "status": "connected",
@@ -128,7 +203,7 @@ def install_connect_routes(
 ) -> None:
     @mcp.custom_route("/connect", methods=["GET"])
     async def connect_page(request: Request) -> Response:
-        return HTMLResponse(_CONNECT_HTML, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(_CONNECT_HTML, headers=_CONNECT_PAGE_HEADERS)
 
     @mcp.custom_route("/connect/start", methods=["POST"])
     async def connect_start(request: Request) -> Response:
@@ -137,6 +212,7 @@ def install_connect_routes(
         await _prune_flows()
         if len(_flows) >= _MAX_ACTIVE_FLOWS:
             return _error("Too many active login attempts. Try again shortly.", 429)
+        client: TelegramClient | None = None
         try:
             body = await _json(request)
             phone = str(body.get("phone", "")).strip()
@@ -154,7 +230,9 @@ def install_connect_routes(
                 phone_code_hash=sent.phone_code_hash,
                 created_at=time.monotonic(),
             )
-            return JSONResponse(
+            # The flow now owns the live client and will disconnect it on completion/expiry.
+            client = None
+            return _response(
                 {
                     "ok": True,
                     "status": "code_sent",
@@ -166,12 +244,20 @@ def install_connect_routes(
             return _error(f"Telegram rate limit. Retry after {exc.seconds} seconds.", 429)
         except Exception as exc:
             return _error(f"Could not start Telegram login: {type(exc).__name__}", 400)
+        finally:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    logger.warning("Could not disconnect failed Telegram login client", exc_info=True)
 
     @mcp.custom_route("/connect/code", methods=["POST"])
     async def connect_code(request: Request) -> Response:
         if not _authorized(request):
             return _error("Invalid connect key.", 401)
         await _prune_flows()
+        flow_id = ""
+        flow: AuthFlow | None = None
         try:
             body = await _json(request)
             flow_id = str(body.get("flow_id", ""))
@@ -189,18 +275,19 @@ def install_connect_routes(
                     phone_code_hash=flow.phone_code_hash,
                 )
             except SessionPasswordNeededError:
-                return JSONResponse({"ok": True, "status": "password_required", "flow_id": flow_id})
+                return _response({"ok": True, "status": "password_required", "flow_id": flow_id})
             except PhoneCodeInvalidError:
                 return _error("Telegram says the code is invalid.")
             except PhoneCodeExpiredError:
-                _flows.pop(flow_id, None)
-                await flow.client.disconnect()
+                await _discard_flow(flow_id, flow)
                 return _error("Telegram code expired. Start again.", 410)
 
             return await _finish_login(flow_id, flow, on_session_saved)
         except FloodWaitError as exc:
+            await _discard_flow(flow_id, flow)
             return _error(f"Telegram rate limit. Retry after {exc.seconds} seconds.", 429)
         except Exception as exc:
+            await _discard_flow(flow_id, flow)
             return _error(f"Could not complete Telegram login: {type(exc).__name__}", 400)
 
     @mcp.custom_route("/connect/password", methods=["POST"])
@@ -208,6 +295,8 @@ def install_connect_routes(
         if not _authorized(request):
             return _error("Invalid connect key.", 401)
         await _prune_flows()
+        flow_id = ""
+        flow: AuthFlow | None = None
         try:
             body = await _json(request)
             flow_id = str(body.get("flow_id", ""))
@@ -225,8 +314,10 @@ def install_connect_routes(
 
             return await _finish_login(flow_id, flow, on_session_saved)
         except FloodWaitError as exc:
+            await _discard_flow(flow_id, flow)
             return _error(f"Telegram rate limit. Retry after {exc.seconds} seconds.", 429)
         except Exception as exc:
+            await _discard_flow(flow_id, flow)
             return _error(f"Could not complete Telegram 2FA: {type(exc).__name__}", 400)
 
 
@@ -266,7 +357,7 @@ async function post(path,payload){const token=$('token').value;const r=await fet
 $('start').onclick=async()=>{try{$('start').disabled=true;status('Requesting Telegram code…');const d=await post('/connect/start',{phone:$('phone').value});flowId=d.flow_id;$('step-start').classList.add('hidden');$('step-code').classList.remove('hidden');status('Code sent. Check Telegram and enter it here.');$('code').focus()}catch(e){status(e.message)}finally{$('start').disabled=false}};
 $('verify').onclick=async()=>{try{$('verify').disabled=true;status('Checking code…');const d=await post('/connect/code',{flow_id:flowId,code:$('code').value});if(d.status==='password_required'){$('step-code').classList.add('hidden');$('step-password').classList.remove('hidden');status('Telegram 2FA is enabled. Enter your password.');$('password').focus()}else if(d.status==='connected'){done(d)}}catch(e){status(e.message)}finally{$('verify').disabled=false}};
 $('verify-password').onclick=async()=>{try{$('verify-password').disabled=true;status('Checking 2FA…');const d=await post('/connect/password',{flow_id:flowId,password:$('password').value});if(d.status==='connected')done(d)}catch(e){status(e.message)}finally{$('verify-password').disabled=false}};
-function done(d){$('step-code').classList.add('hidden');$('step-password').classList.add('hidden');$('password').value='';$('code').value='';const u=d.user||{};status('Connected ✓\n'+(u.username?'@'+u.username:(u.first_name||'Telegram user')),true)}
+function done(d){$('step-code').classList.add('hidden');$('step-password').classList.add('hidden');$('password').value='';$('code').value='';$('token').value='';$('phone').value='';flowId=null;const u=d.user||{};status('Connected ✓\n'+(u.username?'@'+u.username:(u.first_name||'Telegram user')),true)}
 </script>
 </body>
 </html>"""

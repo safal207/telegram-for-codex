@@ -2,21 +2,68 @@ name: ci
 
 on:
   push:
-    branches: [main, feat/mcp-poc]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.11', '3.12']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: python -m pip install -e '.[dev]'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+      - name: Install constrained development dependencies
+        run: |
+          python -m pip install --constraint constraints.txt hatchling==1.32.0
+          python -m pip install --constraint constraints.txt --no-build-isolation '.[dev]'
+          python -m pip check
+      - name: Compile and import
+        run: |
+          python -m compileall -q src tests
+          python -c "import telegram_codex.server, telegram_codex.remote_server"
+          command -v telegram-codex
+      - name: Validate plugin manifests
+        run: |
+          python -m json.tool .codex-plugin/plugin.json > /dev/null
+          python -m json.tool .mcp.json > /dev/null
+          python -c "import json; from pathlib import Path; root=Path('.'); manifest=json.loads((root/'.codex-plugin/plugin.json').read_text()); mcp=json.loads((root/'.mcp.json').read_text()); server=mcp['mcpServers']['telegram']; tools=server['tools']; reads=('telegram_whoami','telegram_audit_log','telegram_list_chats','telegram_get_messages','telegram_search_messages'); assert manifest['name']=='telegram-for-codex'; assert manifest['version']=='0.2.1'; assert manifest['mcpServers']=='./.mcp.json'; assert 'apps' not in manifest; assert server['command']=='telegram-codex'; assert server['default_tools_approval_mode']=='prompt'; assert all(tools[name]['approval_mode']=='auto' for name in reads); assert tools['telegram_send_message']['approval_mode']=='prompt'; assert tools['telegram_edit_message']['approval_mode']=='prompt'"
       - name: Test
         run: pytest -q
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build --tag telegram-for-codex:test .
+      - name: Verify non-root runtime and private data directory
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' telegram-for-codex:test)" = "10001:10001"
+          volume="telegram-codex-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create "$volume"
+          trap 'docker volume rm -f "$volume"' EXIT
+          docker run --rm --user 0 \
+            --mount "type=volume,source=$volume,target=/data/telegram,volume-nocopy" \
+            telegram-for-codex:test \
+            python -c 'import os, stat; info=os.stat("/data/telegram"); assert os.geteuid()==10001; assert stat.S_IMODE(info.st_mode)==0o700; assert info.st_uid==10001'

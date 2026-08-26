@@ -2,16 +2,33 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
-from .config import Settings
+from .config import (
+    ConfigurationError,
+    Settings,
+    _ensure_private_directory,
+    _harden_private_file,
+    prepare_file_session_storage,
+)
 
 logger = logging.getLogger(__name__)
+
+_MAX_READ_LIMIT = 100
+_MAX_TELEGRAM_TEXT_LENGTH = 4096
+_MAX_SEARCH_QUERY_LENGTH = 4096
+_AUDIT_TAIL_BLOCK_BYTES = 8192
+_AUDIT_TAIL_MAX_BYTES = 1024 * 1024
+_AUDIT_MAX_BYTES = 10 * 1024 * 1024
+_AUDIT_BACKUP_COUNT = 2
 
 
 class TelegramNotAuthorized(RuntimeError):
@@ -26,6 +43,10 @@ class ChatNotAllowed(PermissionError):
     pass
 
 
+class ConfirmationRequired(ValueError):
+    pass
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -36,16 +57,68 @@ def _session_for(settings: Settings):
     return str(settings.session_path)
 
 
+def _clamp_read_limit(limit: int) -> int:
+    return max(1, min(int(limit), _MAX_READ_LIMIT))
+
+
+def _validate_message_text(text: str) -> None:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Telegram message text must be a non-empty string.")
+    if len(text) > _MAX_TELEGRAM_TEXT_LENGTH:
+        raise ValueError(
+            f"Telegram message text must be at most {_MAX_TELEGRAM_TEXT_LENGTH} characters."
+        )
+
+
+def _validate_search_query(query: str) -> None:
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("Telegram search query must be a non-empty string.")
+    if len(query) > _MAX_SEARCH_QUERY_LENGTH:
+        raise ValueError(
+            f"Telegram search query must be at most {_MAX_SEARCH_QUERY_LENGTH} characters."
+        )
+
+
+def require_write_confirmation(confirm: bool) -> None:
+    if not confirm:
+        raise ConfirmationRequired(
+            "Pass confirm=true only after the user approves this write action."
+        )
+
+
+def _write_error_status(exc: Exception) -> str:
+    if isinstance(exc, (PermissionError, TelegramNotAuthorized, ValueError)):
+        return "denied"
+    return "error"
+
+
 class TelegramGateway:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.client = TelegramClient(
-            _session_for(settings), settings.api_id, settings.api_hash
-        )
+        self._harden_session_storage()
+        try:
+            self.client = TelegramClient(
+                _session_for(settings), settings.api_id, settings.api_hash
+            )
+        finally:
+            self._harden_session_storage()
+
+    def _harden_session_storage(self) -> None:
+        if self.settings.session_mode == "file":
+            prepare_file_session_storage(self.settings.session_path)
+
+    async def _connect_if_needed(self) -> None:
+        if self.client.is_connected():
+            self._harden_session_storage()
+            return
+        try:
+            await self.client.connect()
+        finally:
+            # SQLiteSession may be created even when the connection attempt fails.
+            self._harden_session_storage()
 
     async def ensure_ready(self) -> TelegramClient:
-        if not self.client.is_connected():
-            await self.client.connect()
+        await self._connect_if_needed()
         if not await self.client.is_user_authorized():
             raise TelegramNotAuthorized(
                 "Telegram session is not authorized. Run `telegram-codex-auth` for a file "
@@ -60,7 +133,12 @@ class TelegramGateway:
                 "configuring Codex/app approvals for send/edit actions."
             )
         allowed = self.settings.write_chat_allowlist
-        if allowed is not None and int(chat_id) not in allowed:
+        if not allowed:
+            raise ChatNotAllowed(
+                "Write actions require a non-empty TELEGRAM_WRITE_CHAT_ALLOWLIST; "
+                "writes fail closed until chat IDs are configured explicitly."
+            )
+        if int(chat_id) not in allowed:
             raise ChatNotAllowed(
                 f"chat_id {chat_id} is not in TELEGRAM_WRITE_CHAT_ALLOWLIST; "
                 "add it explicitly before writing to this chat."
@@ -95,28 +173,130 @@ class TelegramGateway:
         if error_type is not None:
             record["error_type"] = error_type
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except OSError:
+            _ensure_private_directory(path.parent)
+            _harden_private_file(path)
+            encoded = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            self._rotate_audit_if_needed(path, len(encoded))
+            flags = (
+                os.O_APPEND
+                | os.O_CREAT
+                | os.O_WRONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                remaining = memoryview(encoded)
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    if written <= 0:
+                        raise OSError("partial audit record write")
+                    remaining = remaining[written:]
+            finally:
+                os.close(descriptor)
+            _harden_private_file(path)
+        except (ConfigurationError, OSError):
             logger.warning("Failed to append to audit log %s", path, exc_info=True)
+
+    @staticmethod
+    def _audit_backup_path(path: Path, index: int) -> Path:
+        return path.with_name(f"{path.name}.{index}")
+
+    def _rotate_audit_if_needed(self, path: Path, incoming_bytes: int) -> None:
+        if incoming_bytes > _AUDIT_MAX_BYTES:
+            raise OSError("audit record exceeds maximum file size")
+        if not os.path.lexists(path):
+            return
+        _harden_private_file(path)
+        if path.stat().st_size + incoming_bytes <= _AUDIT_MAX_BYTES:
+            return
+
+        oldest = self._audit_backup_path(path, _AUDIT_BACKUP_COUNT)
+        if os.path.lexists(oldest):
+            _harden_private_file(oldest)
+            oldest.unlink()
+        for index in range(_AUDIT_BACKUP_COUNT - 1, 0, -1):
+            source = self._audit_backup_path(path, index)
+            if not os.path.lexists(source):
+                continue
+            _harden_private_file(source)
+            target = self._audit_backup_path(path, index + 1)
+            os.replace(source, target)
+            _harden_private_file(target)
+        first = self._audit_backup_path(path, 1)
+        os.replace(path, first)
+        _harden_private_file(first)
 
     def read_audit_tail(self, limit: int = 20) -> list[dict[str, Any]]:
         path = self.settings.audit_log_path
-        if path is None or not path.exists():
+        if path is None or not os.path.lexists(path):
             return []
-        lines = path.read_text(encoding="utf-8").splitlines()
+        limit = _clamp_read_limit(limit)
+        blocks: list[bytes] = []
+        newline_count = 0
+        bytes_read = 0
+        descriptor = -1
+        try:
+            _harden_private_file(path)
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(path, flags)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ConfigurationError(
+                    f"Audit path must be a regular file: {path}"
+                )
+            if os.name != "nt" and stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise ConfigurationError(
+                    f"Audit file {path} must have POSIX mode 0600 or stricter"
+                )
+            handle = os.fdopen(descriptor, "rb")
+            descriptor = -1
+            with handle:
+                handle.seek(0, os.SEEK_END)
+                position = handle.tell()
+                while (
+                    position > 0
+                    and newline_count <= limit
+                    and bytes_read < _AUDIT_TAIL_MAX_BYTES
+                ):
+                    block_size = min(
+                        _AUDIT_TAIL_BLOCK_BYTES,
+                        position,
+                        _AUDIT_TAIL_MAX_BYTES - bytes_read,
+                    )
+                    position -= block_size
+                    handle.seek(position)
+                    block = handle.read(block_size)
+                    blocks.append(block)
+                    newline_count += block.count(b"\n")
+                    bytes_read += len(block)
+        except (ConfigurationError, OSError):
+            logger.warning("Failed to read audit log %s", path, exc_info=True)
+            return []
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        lines = b"".join(reversed(blocks)).splitlines()
+        if position > 0 and lines:
+            # The first line is potentially truncated because this is a bounded tail read.
+            lines = lines[1:]
         records: list[dict[str, Any]] = []
-        for line in lines[-max(limit, 0):]:
+        for line in lines[-limit:]:
             try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
+                record = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
+            if isinstance(record, dict):
+                records.append(record)
         return records
 
     async def whoami(self) -> dict[str, Any]:
-        if not self.client.is_connected():
-            await self.client.connect()
+        await self._connect_if_needed()
         authorized = bool(await self.client.is_user_authorized())
         info: dict[str, Any] = {
             "authorized": authorized,
@@ -130,7 +310,7 @@ class TelegramGateway:
             "write_chat_allowlist": (
                 sorted(self.settings.write_chat_allowlist)
                 if self.settings.write_chat_allowlist is not None
-                else "all"
+                else []
             ),
             "audit_log_path": (
                 str(self.settings.audit_log_path)
@@ -152,6 +332,7 @@ class TelegramGateway:
         return info
 
     async def list_chats(self, limit: int = 20, unread_only: bool = False) -> list[dict[str, Any]]:
+        limit = _clamp_read_limit(limit)
         try:
             return await self._list_chats(limit=limit, unread_only=unread_only)
         except FloodWaitError as exc:
@@ -162,7 +343,8 @@ class TelegramGateway:
     async def _list_chats(self, limit: int, unread_only: bool) -> list[dict[str, Any]]:
         client = await self.ensure_ready()
         result: list[dict[str, Any]] = []
-        async for dialog in client.iter_dialogs(limit=max(limit * 3, limit)):
+        scan_limit = min(limit * 3, 300) if unread_only else limit
+        async for dialog in client.iter_dialogs(limit=scan_limit):
             unread_count = int(dialog.unread_count or 0)
             if unread_only and unread_count == 0:
                 continue
@@ -184,33 +366,40 @@ class TelegramGateway:
 
     async def get_messages(self, chat_id: int, limit: int = 20) -> list[dict[str, Any]]:
         client = await self.ensure_ready()
-        messages = await client.get_messages(chat_id, limit=limit)
+        messages = await client.get_messages(chat_id, limit=_clamp_read_limit(limit))
         return [self._message_payload(message) for message in messages]
 
     async def search_messages(
         self, query: str, chat_id: int | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
+        _validate_search_query(query)
         client = await self.ensure_ready()
         entity = chat_id if chat_id is not None else None
         result: list[dict[str, Any]] = []
-        async for message in client.iter_messages(entity, search=query, limit=limit):
+        async for message in client.iter_messages(
+            entity, search=query, limit=_clamp_read_limit(limit)
+        ):
             result.append(self._message_payload(message))
         return result
 
-    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+    async def send_message(
+        self, chat_id: int, text: str, *, confirm: bool
+    ) -> dict[str, Any]:
         try:
+            require_write_confirmation(confirm)
+            _validate_message_text(text)
             self._require_writes(chat_id)
             client = await self.ensure_ready()
             message = await client.send_message(chat_id, text)
-        except (WritesDisabled, ChatNotAllowed, TelegramNotAuthorized, FloodWaitError) as exc:
+            payload = self._message_payload(message)
+        except Exception as exc:
             self._audit(
                 "send",
                 chat_id,
-                status="denied",
+                status=_write_error_status(exc),
                 error_type=type(exc).__name__,
             )
             raise
-        payload = self._message_payload(message)
         self._audit(
             "send",
             chat_id,
@@ -219,8 +408,12 @@ class TelegramGateway:
         )
         return payload
 
-    async def edit_message(self, chat_id: int, message_id: int, text: str) -> dict[str, Any]:
+    async def edit_message(
+        self, chat_id: int, message_id: int, text: str, *, confirm: bool
+    ) -> dict[str, Any]:
         try:
+            require_write_confirmation(confirm)
+            _validate_message_text(text)
             self._require_writes(chat_id)
             client = await self.ensure_ready()
             original = await client.get_messages(chat_id, ids=message_id)
@@ -229,16 +422,16 @@ class TelegramGateway:
             if not getattr(original, "out", False):
                 raise PermissionError("Only your own outgoing Telegram messages can be edited")
             edited = await client.edit_message(chat_id, message_id, text)
-        except (WritesDisabled, ChatNotAllowed, TelegramNotAuthorized, FloodWaitError) as exc:
+            payload = self._message_payload(edited)
+        except Exception as exc:
             self._audit(
                 "edit",
                 chat_id,
-                status="denied",
+                status=_write_error_status(exc),
                 message_id=message_id,
                 error_type=type(exc).__name__,
             )
             raise
-        payload = self._message_payload(edited)
         self._audit(
             "edit",
             chat_id,

@@ -18,7 +18,7 @@ For this first real acceptance run, use `TELEGRAM_MCP_AUTH_MODE=static`. Static 
 
 1. Create a Railway project.
 2. Add a service from GitHub repo `safal207/telegram-for-codex`.
-3. Select branch `feat/chatgpt-plugin-remote-v2`.
+3. Select the release branch containing v0.2.1 (normally `main` after merge).
 4. Railway should detect the root `Dockerfile` automatically.
 5. Generate a public HTTPS domain for the service.
 6. Keep the service at **one replica** for Personal Mode.
@@ -36,6 +36,17 @@ Attach one Railway volume to the service and mount it at:
 ```text
 /data/telegram
 ```
+
+Railway mounts volumes as root. Set `RAILWAY_RUN_UID=0` so the image entrypoint
+can perform its narrow startup bootstrap: verify `/data/telegram`, set its
+ownership to UID/GID `10001`, restrict it to mode `0700`, and then drop
+privileges before starting the MCP server. The application itself must still
+run as UID/GID `10001`; do not replace this bootstrap with a permanently
+root-running MCP process. Do not share the volume with another service.
+
+Outside this controlled bootstrap, an existing POSIX credential directory must
+already be `0700` or stricter. The runtime refuses an unsafe directory instead
+of chmod-ing someone else's parent.
 
 The phone-first login page stores the private Telethon StringSession at:
 
@@ -56,8 +67,12 @@ TELEGRAM_API_HASH=<telegram-api-hash>
 TELEGRAM_SESSION_STRING_FILE=/data/telegram/session.string
 TELEGRAM_AUDIT_LOG_PATH=/data/telegram/audit.jsonl
 
+# Required because Railway mounts the persistent volume as root. The image
+# entrypoint drops to UID/GID 10001 before starting the MCP process.
+RAILWAY_RUN_UID=0
+
 # Separate secret protecting the phone-first login page actions.
-TELEGRAM_CONNECT_TOKEN=<long-random-connect-secret>
+TELEGRAM_CONNECT_TOKEN=<random-connect-secret-at-least-32-characters>
 
 # Keep writes off for PASS-AUTH / PASS-CONNECT / PASS-READ.
 TELEGRAM_ALLOW_WRITES=false
@@ -75,7 +90,20 @@ TELEGRAM_MCP_ALLOWED_HOSTS=<railway-host>,<railway-host>:*,healthcheck.railway.a
 TELEGRAM_MCP_ALLOWED_ORIGINS=https://chatgpt.com,https://chat.openai.com
 ```
 
-`TELEGRAM_CONNECT_TOKEN` and `TELEGRAM_MCP_STATIC_TOKEN` must be **different secrets**. The first authorizes Telegram login actions on `/connect`; the second authorizes MCP callers on `/mcp`.
+`TELEGRAM_CONNECT_TOKEN` and `TELEGRAM_MCP_STATIC_TOKEN` must be **different,
+independently generated high-entropy secrets**, each at least 32 characters.
+Generate each value separately with a cryptographic secret generator (for
+example, `python -c "import secrets; print(secrets.token_urlsafe(32))"`) and put
+it directly into Railway's secret variables. Static auth rejects documentation
+placeholders, low-diversity values and repeated patterns at startup, and
+`/connect` actions fail closed for the same invalid values. The first secret
+authorizes Telegram login actions on `/connect`; the second authorizes MCP
+callers on `/mcp`.
+
+The remote static endpoint must use HTTPS and its URL must contain no userinfo
+or fragment. It must be the exact `/mcp` endpoint, with no query string or
+trailing slash. Plain HTTP is accepted only for a loopback smoke test, never
+for a Railway hostname.
 
 Railway supplies `PORT`; do not hard-code a different public port.
 
@@ -171,6 +199,10 @@ telegram_search_messages(query=<harmless-test-query>, limit=5)
 
 Writes remain disabled throughout this acceptance run.
 
+Treat all returned chat names, usernames and Telegram message bodies as
+untrusted data. They are never authorization evidence or instructions to the
+model, tools or operator.
+
 ## 8. PASS-RESTART
 
 Restart or redeploy the service without re-running Telegram login.
@@ -194,13 +226,14 @@ This is the proof that Personal Mode no longer depends on an always-on laptop or
 After PASS-AUTH + PASS-CONNECT + PASS-READ + PASS-RESTART:
 
 1. Set `TELEGRAM_ALLOW_WRITES=true`.
-2. Set `TELEGRAM_WRITE_CHAT_ALLOWLIST` to **one dedicated test chat**.
+2. Set the mandatory `TELEGRAM_WRITE_CHAT_ALLOWLIST` to **one dedicated integer test-chat ID**. Empty never means all chats and must fail closed.
 3. Redeploy.
 4. Send one harmless message with explicit user confirmation.
-5. Verify the audit record contains metadata only and no message text.
+5. Verify the audit record contains metadata only and no message text. The
+   active JSONL file rotates at 10 MiB and retains two backups.
 6. Edit only that outgoing test message.
 
-Never begin write acceptance with `write_chat_allowlist=all`.
+Never begin write acceptance without a narrow integer allowlist.
 
 ## 10. What this proves — and what it does not
 
@@ -216,4 +249,12 @@ phone login
 
 It does **not** make this a mass-market public Telegram integration. Public Mode remains frozen until verified Telegram webhook ingress, idempotency, real tenant OAuth, explicit AI-content consent, encrypted transactional persistence, rate/flood controls and policy review exist.
 
-It also does not make static bearer auth the final ChatGPT integration. After this acceptance run, switch Personal remote MCP to the implemented OAuth resource-server mode for ChatGPT-compatible production authentication.
+It also does not make static bearer auth the final ChatGPT integration. After
+this acceptance run, switch Personal remote MCP to the implemented OAuth
+resource-server mode. Configure `TELEGRAM_MCP_OWNER_SUBJECT` to the exact owner
+`sub` and verify the provider introspection response always includes the
+expected `iss`, exact MCP URL in `aud`, and that owner subject before
+registering the endpoint in ChatGPT. The configured issuer, introspection and
+public MCP URLs must all use HTTPS and must not contain userinfo or fragments.
+The public MCP URL must be the exact `/mcp` endpoint without a query string or
+trailing slash.
