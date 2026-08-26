@@ -301,22 +301,9 @@ class TelegramGateway:
         info: dict[str, Any] = {
             "authorized": authorized,
             "session_mode": self.settings.session_mode,
-            "session_path": (
-                str(self.settings.session_path)
-                if self.settings.session_mode == "file"
-                else None
-            ),
             "allow_writes": self.settings.allow_writes,
-            "write_chat_allowlist": (
-                sorted(self.settings.write_chat_allowlist)
-                if self.settings.write_chat_allowlist is not None
-                else []
-            ),
-            "audit_log_path": (
-                str(self.settings.audit_log_path)
-                if self.settings.audit_log_path is not None
-                else None
-            ),
+            "write_allowlist_configured": bool(self.settings.write_chat_allowlist),
+            "audit_enabled": self.settings.audit_log_path is not None,
         }
         if not authorized:
             info["hint"] = (
@@ -324,11 +311,6 @@ class TelegramGateway:
                 "StringSession with `telegram-codex-auth-string`."
             )
             return info
-        me = await self.client.get_me()
-        info["user_id"] = int(me.id)
-        info["username"] = getattr(me, "username", None)
-        info["first_name"] = getattr(me, "first_name", None)
-        info["phone"] = getattr(me, "phone", None)
         return info
 
     async def list_chats(self, limit: int = 20, unread_only: bool = False) -> list[dict[str, Any]]:

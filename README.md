@@ -1,279 +1,221 @@
-# Telegram for ChatGPT & Codex
+# Telegram for Codex
 
-Use Telegram from ChatGPT and Codex through MCP with two deliberately separate products and trust models:
+**A private, local Telegram inbox for Codex.** Review unread chats, search your
+history, and draft replies without copy/paste. Reading private chat content is
+reviewable; sending and editing stay disabled until you explicitly enable and
+approve them.
 
-- **Personal Mode** — self-hosted/private **“my Telegram”** access for one power user.
-- **Public Mode** — multi-user **AI secretary for explicitly allowed private chats** through Telegram Business delegation.
+> Developer alpha (`0.3.0`). Personal Mode is the product available today. It
+> gives Codex access to your Telegram account; it does **not** control Codex from
+> Telegram. ChatGPT remote access and the multi-user Business product remain
+> separate, unfinished tracks.
 
-Public Mode is intentionally **not** described as “Telegram like Gmail”. Telegram Business does not expose arbitrary whole-account history or every chat type. The product promise must follow the API boundary.
+## What it does
 
-## Status
+- summarize unread Telegram chats;
+- find a message or conversation by topic;
+- read recent context before drafting a reply;
+- send or edit text only after recipient/text review and explicit approval;
+- keep the Telegram session on your machine in local mode;
+- record optional metadata-only write audit events without message text.
 
-`v0.2.1 Personal remote alpha + hardened local plugin packaging + frozen Public foundation`
+Example prompts:
 
-### Personal Mode
-
-- Local Codex STDIO MCP via `telegram-codex`.
-- Bundled Codex plugin wiring via `.codex-plugin/plugin.json` and `.mcp.json`.
-- Remote Streamable HTTP MCP at `/mcp` via `telegram-codex-remote`.
-- Phone-first `/connect` authorization; no Termux required for that flow.
-- Telethon StringSession secret/file modes.
-- Read/search/send/edit tools with `confirm=true`, allowlist and audit controls.
-- **Remote caller auth is now fail-closed.** The production path is OAuth 2.1 resource-server auth; a static bearer mode exists only for private curl/MCP Inspector smoke tests.
-
-### Public Mode foundation — intentionally frozen before MCP exposure
-
-The branch contains a separate Telegram Business architecture that does **not** store a personal MTProto session for each public user:
-
-- Telegram Business connection/right models;
-- server-side capability enforcement;
-- Bot API adapter for connection lookup/send/edit/mark-read/delete;
-- business webhook normalization;
-- privacy-first `NullBusinessEventStore` default;
-- optional tenant-isolated TTL event-store contract;
-- one-time hashed Telegram deep-link account binding;
-- revocable app-user ↔ Telegram-user ↔ Business-connection registry.
-
-This is a **domain/service scaffold, not a production public service**. Do not expose Public Mode as MCP tools until OAuth, verified webhook ingress, consent, idempotency/replay protection, durable encrypted storage and rate controls exist.
-
-Architecture:
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/PUBLIC_MODE.md`](docs/PUBLIC_MODE.md)
-- [`docs/CHATGPT_PLUGIN.md`](docs/CHATGPT_PLUGIN.md)
-- [`docs/LOCAL_PLUGIN.md`](docs/LOCAL_PLUGIN.md)
-
-## Personal Mode MCP tools
-
-- `telegram_whoami()` — authorization status and safety configuration; phone number is not returned.
-- `telegram_audit_log(limit)` — recent audited write attempts.
-- `telegram_list_chats(limit, unread_only)` — recent chats and unread counts.
-- `telegram_get_messages(chat_id, limit)` — recent messages in one chat.
-- `telegram_search_messages(query, chat_id?, limit)` — search globally or in one chat.
-- `telegram_send_message(chat_id, text, confirm)` — send text; requires `confirm=true`.
-- `telegram_edit_message(chat_id, message_id, text, confirm)` — edit your outgoing message; requires `confirm=true`.
-
-Read tools carry MCP read-only annotations. Write tools remain disabled unless `TELEGRAM_ALLOW_WRITES=true`; enabling them also requires a non-empty `TELEGRAM_WRITE_CHAT_ALLOWLIST`. Write attempts can be recorded in the JSONL audit trail.
-
-## Personal remote caller authentication
-
-Remote `/mcp` has **no unauthenticated mode**.
-
-### Production / ChatGPT path
-
-The MCP server acts as an OAuth 2.1 Resource Server. It validates bearer access tokens issued by an external authorization server using RFC 7662 introspection and publishes RFC 9728 Protected Resource Metadata for client discovery.
-
-Required configuration:
-
-```dotenv
-TELEGRAM_MCP_AUTH_MODE=oauth
-TELEGRAM_MCP_PUBLIC_URL=https://telegram.example.com/mcp
-TELEGRAM_MCP_OAUTH_SCOPES=telegram:personal
-TELEGRAM_OAUTH_ISSUER_URL=https://your-auth-provider.example.com/
-TELEGRAM_MCP_OWNER_SUBJECT=<exact-owner-sub-claim>
-TELEGRAM_OAUTH_INTROSPECTION_URL=https://your-auth-provider.example.com/oauth2/introspect
-TELEGRAM_OAUTH_INTROSPECTION_CLIENT_ID=...
-TELEGRAM_OAUTH_INTROSPECTION_CLIENT_SECRET=...
+```text
+Show my unread Telegram chats.
+Find my recent Telegram conversation about Project Aurora.
+Draft a reply to the latest message in the test chat. Do not send it.
 ```
 
-ChatGPT must authenticate against the configured authorization server; the MCP endpoint itself never issues login tokens. Introspection must return the configured issuer, the exact MCP public URL in `aud`, and the one configured owner in `sub`; missing or different claims are rejected.
+## Who it is for
 
-`TELEGRAM_MCP_PUBLIC_URL`, `TELEGRAM_OAUTH_ISSUER_URL` and
-`TELEGRAM_OAUTH_INTROSPECTION_URL` must be HTTPS URLs without embedded
-username/password (`userinfo`) or a fragment. The MCP public URL must identify
-the exact `/mcp` endpoint, with no query string or trailing slash. Invalid URLs
-fail startup.
+Personal Mode is for a single technical user who already uses Codex Desktop/CLI
+and wants self-hosted access to their own Telegram account. It requires Python
+3.11 or newer (CI currently covers 3.11/3.12) and Telegram API credentials from
+`my.telegram.org`.
 
-### Private smoke-test mode
+It is not a hosted consumer service, a team connector, or a Telegram Business
+automation product. Public Mode is intentionally not exposed through MCP.
 
-For a trusted tunnel / MCP Inspector / curl test only:
+## Quick start
 
-```dotenv
-TELEGRAM_MCP_AUTH_MODE=static
-TELEGRAM_MCP_PUBLIC_URL=https://telegram.example.com/mcp
-TELEGRAM_MCP_STATIC_TOKEN=<32+ random characters>
+### 1. Install the Python runtime
+
+The recommended developer-alpha path uses `pipx`, which keeps the package
+isolated while placing the `telegram-codex*` launchers on the user PATH. Install
+[`pipx` from its official guide](https://pipx.pypa.io/latest/how-to/install-pipx.html),
+then run:
+
+```text
+pipx ensurepath
 ```
 
-This proves the bearer gate but is **not** the production ChatGPT auth flow.
-Static mode also requires HTTPS when the endpoint is remote. Plain HTTP is
-accepted only for a loopback (`localhost`, `127.0.0.1` or `::1`) smoke test;
-userinfo and URL fragments remain forbidden.
+Open a new terminal, then install this project:
 
-## Security rules
+```text
+pipx install "git+https://github.com/safal207/telegram-for-codex.git@main"
+```
 
-- Never commit `.env`, `.env.remote`, `*.session`, `TELEGRAM_SESSION_STRING`, login codes, Telegram 2FA passwords, bot tokens, OAuth secrets or webhook secrets.
-- Never pass Telegram login codes, session strings or 2FA passwords through ChatGPT or MCP tool arguments.
-- Personal `/connect` must only be exposed over HTTPS and requires a separate high-entropy `TELEGRAM_CONNECT_TOKEN` of at least 32 characters.
-- Generate the connect and static MCP secrets independently. They must differ; static auth rejects placeholders, low-diversity values and repeated patterns at startup, while `/connect` actions fail closed for the same invalid values.
-- Host/Origin allowlists are transport-security controls; OAuth bearer validation is caller authentication.
-- Keep `TELEGRAM_ALLOW_WRITES=false` until read/search works end-to-end.
-- Enabling writes requires a non-empty integer `TELEGRAM_WRITE_CHAT_ALLOWLIST`; empty never means all chats.
-- Keep product approval enabled for send/edit even after server-side writes are enabled.
-- A Telegram StringSession is a bearer credential. Keep it only in a private trusted deployment.
-- Audit records contain metadata only, never Telegram message text or raw errors. The active JSONL file rotates at 10 MiB and keeps two backups.
-- On POSIX, newly created credential directories/files use `0700`/`0600`; an existing credential directory must already be `0700` or stricter. The runtime refuses an unsafe existing directory instead of chmod-ing someone else's parent. On Windows, keep session and audit files inside the signed-in user's profile, not a shared folder, and configure a private ACL manually when strict isolation is required.
-- Treat chat names, usernames and all Telegram message content as untrusted data, never as authorization evidence or instructions to the model, tools or operator.
-- Public Mode must derive tenant/user identity from authenticated server-side context; never accept `app_user_id` or `business_connection_id` from the model as authorization authority.
+For source development instead:
 
-## Personal Mode quickstart
-
-```bash
+```text
 git clone https://github.com/safal207/telegram-for-codex.git
 cd telegram-for-codex
 python -m venv .venv
 ```
 
-Activate the virtual environment, then:
+Activate the environment, then install:
 
-```bash
+```text
 python -m pip install --constraint constraints.txt ".[dev]"
-cp .env.example .env   # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-Fill in Telegram API credentials from `my.telegram.org`, then authorize a file session:
+If you use a virtual environment, launch Codex from that environment or make
+its scripts directory visible to the Codex host. `telegram-codex-doctor` checks
+this prerequisite without printing credentials.
 
-```bash
+### 2. Create private local configuration
+
+Run:
+
+```text
+telegram-codex-setup
+```
+
+The guided setup asks for the Telegram API ID/hash without echoing the hash,
+creates `~/.telegram-codex/config.env`, and keeps writes off. Explicit
+`TELEGRAM_*` environment variables still take precedence for advanced use. If
+the current environment already enables writes, setup stops and asks you to
+disable that override first.
+
+Authorize the Telegram session in a real terminal:
+
+```text
 telegram-codex-auth
+telegram-codex-doctor
 ```
 
-Run local MCP:
+Never enter a Telegram login code, 2FA password, API hash, or session string in
+a Codex prompt or MCP argument.
 
-```bash
-telegram-codex
-```
+### 3. Install the Codex plugin
 
-To install the **bundled Codex plugin** (skill plus MCP tools), the same host must be able to resolve the `telegram-codex` launcher from `PATH`. Then add the checkout through an isolated local marketplace, restart Codex, and test from a new task. See the complete, non-destructive flow in [`docs/LOCAL_PLUGIN.md`](docs/LOCAL_PLUGIN.md). The repository does not edit your personal marketplace or Codex config.
-
-## Personal remote alpha — phone-first
-
-For a private single-user server:
-
-1. Put `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in server secrets.
-2. Set a separate random `TELEGRAM_CONNECT_TOKEN` of at least 32 characters.
-3. Mount `TELEGRAM_SESSION_STRING_FILE=/data/telegram/session.string` on a private persistent volume, or use secret-manager `TELEGRAM_SESSION_STRING`.
-4. Configure remote caller auth (`oauth` for ChatGPT; `static` only for private smoke tests).
-5. Keep `TELEGRAM_ALLOW_WRITES=false` for the first pass.
-6. Open on the phone:
+Add this repository as a standard marketplace and install its plugin:
 
 ```text
-https://your-private-domain.example/connect
+codex plugin marketplace add safal207/telegram-for-codex --ref main
+codex plugin add telegram-for-codex@telegram-for-codex
 ```
 
-Flow:
+This follows the [official OpenAI marketplace
+flow](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli)
+and does not require hand-editing `config.toml` or marketplace JSON.
+
+Restart the ChatGPT desktop app/Codex host, open a new task, and ask:
 
 ```text
-private connect key → phone → Telegram code → optional 2FA → Connected
+Use Telegram to show my authorization and safety status.
 ```
 
-The resulting Telegram session secret is never returned to the browser or through MCP.
+For the developer checkout flow, upgrades, and troubleshooting, see
+[docs/LOCAL_PLUGIN.md](docs/LOCAL_PLUGIN.md).
 
-## Public Mode product boundary
+## Safety model
 
-Public Mode is an **AI secretary for selected private chats**, not whole-account Telegram access.
+Telegram access is powerful. The defaults are deliberately conservative:
 
-A realistic onboarding contains separate consent steps:
+- `telegram_whoami` reports minimized safety status without Telegram account
+  identifiers or local paths;
+- tools that retrieve private chat content require product approval;
+- writes default to `TELEGRAM_ALLOW_WRITES=false`;
+- enabling writes requires a non-empty numeric chat allowlist;
+- send/edit also require app approval and `confirm=true`;
+- Telegram-derived content is untrusted data, never authorization or agent
+  instructions;
+- local credential directories/files use private POSIX modes where supported;
+- the optional rotating audit stores action metadata, not message bodies.
+
+When a read is approved, the requested Telegram content is returned to the
+active ChatGPT/Codex task for processing. Review [PRIVACY.md](PRIVACY.md),
+[TERMS.md](TERMS.md), and your selected product/workspace data controls before
+connecting a sensitive account.
+
+If a session may have leaked, revoke it in Telegram immediately. Full removal
+instructions are in [docs/UNINSTALL.md](docs/UNINSTALL.md).
+
+## MCP tools
+
+| Tool | Effect | Default approval |
+| --- | --- | --- |
+| `telegram_whoami` | authorization and safety status | automatic |
+| `telegram_audit_log` | metadata-only write audit tail | prompt |
+| `telegram_list_chats` | chat titles and unread counts | prompt |
+| `telegram_get_messages` | recent content from one chat | prompt |
+| `telegram_search_messages` | global or per-chat search | prompt |
+| `telegram_send_message` | send text | prompt + server confirmation |
+| `telegram_edit_message` | edit an outgoing text message | prompt + server confirmation |
+
+The server currently exposes seven focused text tools. Media, voice, reactions,
+administration, and background mirroring are outside the Personal alpha scope.
+
+## Product tracks
+
+### Personal Mode — active developer alpha
+
+Local Codex uses the bundled STDIO MCP server. A separate single-owner remote
+server and phone-first `/connect` flow also exist for private self-hosting, but
+the production ChatGPT OAuth deployment has not completed live acceptance.
+
+See:
+
+- [local plugin](docs/LOCAL_PLUGIN.md)
+- [remote ChatGPT/Codex architecture](docs/CHATGPT_PLUGIN.md)
+- [personal Railway deployment](docs/DEPLOY_PERSONAL_RAILWAY.md)
+- [system architecture](docs/ARCHITECTURE.md)
+
+### Public Mode — architecture only
+
+The future multi-user product is an AI secretary for explicitly permitted
+private chats through Telegram Business delegation. It is not whole-account
+history and it is not available today. The scaffold stays frozen until verified
+webhooks, OAuth tenant identity, consent, encrypted storage, deletion controls,
+rate limits, and privacy/policy review exist.
+
+See [docs/PUBLIC_MODE.md](docs/PUBLIC_MODE.md).
+
+## Development
 
 ```text
-ChatGPT/app OAuth
-        ↓
-Telegram deep-link identity binding
-        ↓
-Telegram Business Bot: choose chats + rights
-        ↓
-Explicit disclosure/consent that selected message content may be sent to OpenAI when the user invokes ChatGPT
-        ↓
-Connected
+python -m pip install --constraint constraints.txt ".[dev]"
+pytest -q
 ```
 
-Public Mode should answer questions such as:
+CI tests Python 3.11/3.12, validates the marketplace/plugin manifests, and
+builds the non-root container. The live release gate is stricter than unit CI:
 
-```text
-“What did Ivan write after I connected the bot to this chat?”
-```
-
-It must not promise:
-
-```text
-“Search my entire Telegram history from 2019.”
-```
-
-Business access is event-driven and scoped. Broader personal history remains a Personal Mode capability.
-
-Also treat “one connected business bot per Telegram account” as a product constraint, not a footnote: a user may have to choose our secretary instead of another connected Business bot.
-
-## Public Mode data retention
-
-Default:
-
-```text
-business update → process current user-directed task → discard message body
-```
-
-`NullBusinessEventStore` is the default design.
-
-If a user explicitly enables searchable recent history, use bounded encrypted TTL retention such as 24 hours / 7 days / 30 days. No permanent whole-Telegram mirror, global corpus or whole-history embedding index.
-
-## Acceptance
-
-### Personal PASS-AUTH
-
-- `/mcp` without a bearer token → `401 Unauthorized`.
-- RFC 9728 protected-resource metadata is published.
-- missing/wrong issuer, missing/wrong audience, and non-owner OAuth subjects are rejected, as are expired/inactive tokens.
-- static test token works only when explicitly configured.
-
-### Personal PASS-CONNECT
-
-On a phone, complete `/connect`, then call `telegram_whoami`. Expected: `authorized: true`, no session secret and no phone-number PII.
-
-### Personal PASS-READ
-
-With writes disabled:
-
-```text
-Покажи мои непрочитанные чаты Telegram.
-```
-
-```text
-Найди в Telegram переписку про <topic>.
-```
-
-### Public foundation acceptance
-
-- disabled Business connections deny all write capabilities;
-- Telegram-side Business rights gate each action;
-- no-store mode retains no message bodies;
-- TTL dev store is tenant-isolated;
-- one-time Telegram link tokens expire and cannot be reused;
-- revocation removes Business connection routing immediately;
-- outbound Bot API calls use the server-resolved `business_connection_id`.
+1. PASS-AUTH against the real OAuth deployment;
+2. PASS-CONNECT with a dedicated Telegram account;
+3. PASS-READ against synthetic test chats;
+4. record the real [60-second demo](docs/DEMO.md);
+5. only then create a tagged beta release.
 
 ## Roadmap
 
-### Personal Mode — active work
+- [x] Local read/search/send/edit vertical slice.
+- [x] Approval, allowlist, audit, and untrusted-content boundaries.
+- [x] Bundled Codex plugin and repository marketplace.
+- [x] Guided local setup and diagnostic doctor.
+- [ ] Complete real-account Personal acceptance and publish the demo.
+- [ ] Add richer sender/reply context before expanding tool count.
+- [ ] Add attachments and voice as separately reviewable capabilities.
+- [ ] Configure and verify production OAuth for the single-owner remote path.
+- [ ] Keep Public Mode unexposed until every documented prerequisite passes.
 
-- [x] Local STDIO MCP vertical slice.
-- [x] Telegram user-session authorization.
-- [x] Read/search/send/edit tools.
-- [x] `confirm=true`, allowlist, audit trail and MCP safety annotations.
-- [x] Remote Streamable HTTP `/mcp` entrypoint.
-- [x] Host/Origin transport-security allowlists.
-- [x] Mobile `/connect` flow.
-- [x] Fail-closed OAuth 2.1 resource-server caller auth + static private smoke-test mode.
-- [x] Owner-bound OAuth subject plus required issuer/audience claims.
-- [x] Bundled `.mcp.json` wiring for local Codex installation (host Python/package launcher remains a prerequisite).
-- [ ] Configure a real OAuth/OIDC provider with refresh/offline access for ChatGPT.
-- [ ] Run PASS-AUTH / PASS-CONNECT / PASS-READ against a real deployment and Telegram account.
+## Project
 
-### Public Mode — frozen until prerequisites exist
-
-- [x] Product/trust split and Business domain scaffold.
-- [x] Rights enforcement, Bot API adapter, webhook normalization, no-store/TTL contracts and revocation model.
-- [ ] **Do not add Public MCP tools yet.**
-- [ ] Verified Telegram webhook ingress + idempotency/replay protection.
-- [ ] Real app OAuth/tenant middleware.
-- [ ] Explicit consent ledger including disclosure of transfer to OpenAI for user-directed processing.
-- [ ] Encrypted transactional connection/retention storage.
-- [ ] Rate limits/flood protection/write audit.
-- [ ] Telegram/OpenAI policy + privacy review.
-- [ ] Only then expose Public Mode tools and prepare Directory submission.
+- [Changelog](CHANGELOG.md)
+- [Support](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Privacy](PRIVACY.md)
+- [Terms](TERMS.md)
+- [MIT License](LICENSE)

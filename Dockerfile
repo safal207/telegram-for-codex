@@ -18,7 +18,7 @@ RUN python -m pip install --constraint constraints.txt hatchling==1.32.0 setupto
         --no-index \
         --find-links=/wheels \
         --prefix=/install \
-        telegram-for-codex==0.2.1
+        telegram-for-codex==0.3.0
 
 FROM python:3.12.13-slim-bookworm AS runtime
 

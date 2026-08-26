@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 import stat
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
+from typing import Mapping
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, find_dotenv
+from dotenv.parser import parse_stream
 
 
 class ConfigurationError(RuntimeError):
@@ -13,9 +16,11 @@ class ConfigurationError(RuntimeError):
 
 
 _AUDIT_OFF_VALUES = {"off", "none", "disabled", "0", "false", ""}
+_DOTENV_DISABLED_VALUES = {"1", "true", "t", "yes", "y"}
 _SECRET_MIN_LENGTH = 32
 _SECRET_MIN_UNIQUE_CHARACTERS = 8
 _MAX_SESSION_STRING_FILE_BYTES = 1024 * 1024
+_MAX_USER_CONFIG_FILE_BYTES = 64 * 1024
 _SECRET_PLACEHOLDERS = (
     "changeme",
     "exampletoken",
@@ -195,6 +200,77 @@ def _read_private_text_file(path: Path, *, max_bytes: int) -> str:
         raise ConfigurationError(f"Private file {path} must contain UTF-8 text") from exc
 
 
+def resolve_user_config_path(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Return the per-user config path, honoring an explicit safe override."""
+    source = os.environ if environ is None else environ
+    override = source.get("TELEGRAM_CODEX_CONFIG_FILE", "").strip()
+    try:
+        if override:
+            resolved_override = Path(override).expanduser()
+            if not resolved_override.is_absolute():
+                raise ConfigurationError(
+                    "TELEGRAM_CODEX_CONFIG_FILE must be an absolute path"
+                )
+            return resolved_override
+        home_directory = Path.home() if home is None else home
+    except ConfigurationError:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise ConfigurationError(
+            "Unable to resolve the private config path; set TELEGRAM_CODEX_CONFIG_FILE"
+        ) from exc
+    return home_directory / ".telegram-codex" / "config.env"
+
+
+def _parse_user_config(path: Path) -> dict[str, str]:
+    """Read and strictly parse a bounded private dotenv file."""
+    _ensure_private_directory(path.parent)
+    raw = _read_private_text_file(path, max_bytes=_MAX_USER_CONFIG_FILE_BYTES)
+    malformed = [binding for binding in parse_stream(StringIO(raw)) if binding.error]
+    if malformed:
+        line = malformed[0].original.line
+        raise ConfigurationError(f"Private config {path} has invalid dotenv syntax at line {line}")
+    values = dotenv_values(stream=StringIO(raw), interpolate=False)
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _settings_environment(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Load one trusted config source, with explicit environment as top priority."""
+    explicit = dict(os.environ if environ is None else environ)
+    dotenv_disabled = (
+        explicit.get("PYTHON_DOTENV_DISABLED", "").casefold()
+        in _DOTENV_DISABLED_VALUES
+    )
+    config_path = resolve_user_config_path(environ=explicit)
+    if dotenv_disabled:
+        config_values: dict[str, str] = {}
+    elif os.path.lexists(config_path):
+        config_values = _parse_user_config(config_path)
+    elif explicit.get("TELEGRAM_CODEX_CONFIG_FILE", "").strip():
+        raise ConfigurationError(f"Private config file does not exist: {config_path}")
+    else:
+        # Legacy/source-development fallback. Deliberately do not use usecwd=True:
+        # an unrelated workspace must not be able to override account safety policy.
+        project_dotenv = find_dotenv()
+        config_values = (
+            {
+                key: value
+                for key, value in dotenv_values(project_dotenv).items()
+                if value is not None
+            }
+            if project_dotenv
+            else {}
+        )
+
+    return {**config_values, **explicit}
+
+
 def _telethon_session_file(session_path: Path) -> Path:
     """Return the SQLite filename Telethon derives from a file-session path."""
     if str(session_path).endswith(".session"):
@@ -289,8 +365,8 @@ def prepare_file_session_storage(session_path: Path) -> None:
         _harden_private_file(path)
 
 
-def _load_session_string(path: Path) -> str | None:
-    raw = os.getenv("TELEGRAM_SESSION_STRING")
+def _load_session_string(path: Path, environ: Mapping[str, str]) -> str | None:
+    raw = environ.get("TELEGRAM_SESSION_STRING")
     if raw and raw.strip():
         return raw.strip()
 
@@ -320,14 +396,17 @@ class Settings:
         return "string" if self.session_string else "file"
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        load_dotenv()
-        api_id_raw = os.getenv("TELEGRAM_API_ID")
-        api_hash = os.getenv("TELEGRAM_API_HASH")
+    def from_env(
+        cls, *, environ: Mapping[str, str] | None = None
+    ) -> "Settings":
+        values = _settings_environment(environ)
+        api_id_raw = values.get("TELEGRAM_API_ID")
+        api_hash = values.get("TELEGRAM_API_HASH")
         if not api_id_raw or not api_hash:
             raise ConfigurationError(
                 "TELEGRAM_API_ID and TELEGRAM_API_HASH are required. "
-                "Create them at https://my.telegram.org and put them in .env."
+                "Create them at https://my.telegram.org, then run "
+                "telegram-codex-setup or set explicit environment variables."
             )
         try:
             api_id = int(api_id_raw)
@@ -335,12 +414,12 @@ class Settings:
             raise ConfigurationError("TELEGRAM_API_ID must be an integer") from exc
 
         session_path = Path(
-            os.getenv("TELEGRAM_SESSION_PATH", ".telegram/codex")
+            values.get("TELEGRAM_SESSION_PATH", ".telegram/codex")
         ).expanduser()
 
-        allow_writes = _as_bool(os.getenv("TELEGRAM_ALLOW_WRITES"))
+        allow_writes = _as_bool(values.get("TELEGRAM_ALLOW_WRITES"))
         write_chat_allowlist = _parse_allowlist(
-            os.getenv("TELEGRAM_WRITE_CHAT_ALLOWLIST")
+            values.get("TELEGRAM_WRITE_CHAT_ALLOWLIST")
         )
         if allow_writes and not write_chat_allowlist:
             raise ConfigurationError(
@@ -348,13 +427,13 @@ class Settings:
                 "TELEGRAM_WRITE_CHAT_ALLOWLIST of comma-separated integer chat IDs."
             )
 
-        audit_raw = os.getenv("TELEGRAM_AUDIT_LOG_PATH", ".telegram/audit.jsonl")
+        audit_raw = values.get("TELEGRAM_AUDIT_LOG_PATH", ".telegram/audit.jsonl")
         if audit_raw.strip().lower() in _AUDIT_OFF_VALUES:
             audit_log_path: Path | None = None
         else:
             audit_log_path = Path(audit_raw).expanduser()
 
-        session_string_raw = os.getenv(
+        session_string_raw = values.get(
             "TELEGRAM_SESSION_STRING_FILE", ".telegram/remote.session.string"
         ).strip()
         session_string_path = Path(
@@ -365,7 +444,7 @@ class Settings:
             session_string_path=session_string_path,
             audit_log_path=audit_log_path,
         )
-        session_string = _load_session_string(session_string_path)
+        session_string = _load_session_string(session_string_path, values)
         if session_string is None:
             prepare_file_session_storage(session_path)
         if audit_log_path is not None:
@@ -375,7 +454,7 @@ class Settings:
         return cls(
             api_id=api_id,
             api_hash=api_hash,
-            phone=os.getenv("TELEGRAM_PHONE"),
+            phone=values.get("TELEGRAM_PHONE"),
             session_path=session_path,
             allow_writes=allow_writes,
             write_chat_allowlist=write_chat_allowlist,
