@@ -425,9 +425,6 @@ def test_whoami_reports_authorized_user(tmp_path: Path) -> None:
         async def is_user_authorized(self) -> bool:
             return True
 
-        async def get_me(self):
-            return SimpleNamespace(id=42, username="tester", first_name="Test", phone="+79990000000")
-
     gateway = TelegramGateway(
         Settings(
             api_id=1,
@@ -443,6 +440,8 @@ def test_whoami_reports_authorized_user(tmp_path: Path) -> None:
     info = asyncio.run(gateway.whoami())
 
     assert info["authorized"] is True
-    assert info["user_id"] == 42
-    assert info["username"] == "tester"
-    assert info["write_chat_allowlist"] == [1]
+    assert info["write_allowlist_configured"] is True
+    assert info["audit_enabled"] is False
+    assert "user_id" not in info
+    assert "username" not in info
+    assert "session_path" not in info

@@ -1,161 +1,171 @@
 # Install and test the local Codex plugin
 
-This repository is a bundled local plugin: `.codex-plugin/plugin.json` points to
-`./.mcp.json`, and `.mcp.json` starts the STDIO server with the
-`telegram-codex` console launcher. It does not contain a registered remote app
-ID and intentionally has no `.app.json` or `apps` manifest field.
-
-The packaging follows OpenAI's current [plugin structure and path
-rules](https://developers.openai.com/plugins/build/plugins#plugin-structure).
-Local marketplace availability varies by product surface; ChatGPT web does not
-run this local STDIO process.
-
-## 1. Install the runtime prerequisite
-
-The plugin package does **not** install Python or Python dependencies when it is
-enabled. Before installing the plugin, provide:
-
-- Python 3.11 or 3.12 on the same host as the Codex desktop app/CLI;
-- this Python package installed into a virtual environment or isolated app
-  environment;
-- the generated `telegram-codex` launcher on the host `PATH` visible to Codex.
-
-For an ordinary virtual environment:
-
-```bash
-python -m venv .venv
-.venv/bin/python -m pip install --constraint constraints.txt .
-```
-
-On Windows PowerShell, the install command is:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install --constraint constraints.txt .
-```
-
-Then add `.venv/bin` (macOS/Linux) or `.venv\Scripts` (Windows) to the host
-`PATH` **before starting Codex**. An isolated installer such as `pipx install
-<absolute-checkout-path>` is also suitable when `pipx` is already installed.
-
-Verify the prerequisite in the same environment that starts Codex:
+The repository is both a Python project and a standard Codex marketplace:
 
 ```text
-macOS/Linux: command -v telegram-codex
+.agents/plugins/marketplace.json
+plugins/telegram-for-codex/
+├── .codex-plugin/plugin.json
+├── .mcp.json
+└── skills/telegram-for-codex/SKILL.md
+```
+
+The bundled `.mcp.json` starts the installed `telegram-codex` STDIO launcher.
+ChatGPT web cannot run that local process. The remote ChatGPT path is a separate
+single-owner alpha described in [CHATGPT_PLUGIN.md](CHATGPT_PLUGIN.md).
+
+## 1. Install the launcher
+
+Python 3.11 or newer is required; CI currently covers 3.11/3.12. The recommended
+developer-alpha install uses `pipx`. First follow the [official pipx install
+guide](https://pipx.pypa.io/latest/how-to/install-pipx.html), then run:
+
+```text
+pipx ensurepath
+```
+
+Open a new terminal and install:
+
+```text
+pipx install "git+https://github.com/safal207/telegram-for-codex.git@main"
+```
+
+Verify from the same user account that starts Codex:
+
+```text
 PowerShell:  Get-Command telegram-codex
+macOS/Linux: command -v telegram-codex
 ```
 
-There is no reliable cross-platform `python` executable name and this plugin
-does not download code at runtime, so `.mcp.json` deliberately uses the
-installed console launcher instead of a network bootstrap.
-
-## 2. Provide local Telegram settings
-
-The `.mcp.json` entry forwards `TELEGRAM_*` variables from the Codex host to the
-STDIO process. Set them in the environment that starts Codex, then fully restart
-the app/CLI. At minimum:
-
-```dotenv
-TELEGRAM_API_ID=<integer-api-id>
-TELEGRAM_API_HASH=<api-hash>
-TELEGRAM_SESSION_PATH=<absolute-private-path>/codex
-TELEGRAM_ALLOW_WRITES=false
-TELEGRAM_AUDIT_LOG_PATH=<absolute-private-path>/audit.jsonl
-```
-
-Use an absolute session path because an installed plugin runs from a cache
-directory. Do not put secrets into the plugin or marketplace tree: local plugin
-installation can copy that tree into a cache.
-
-Authorize once from the same environment:
-
-```bash
-telegram-codex-auth
-```
-
-On POSIX, newly created credential directories/files use `0700`/`0600`. An
-existing credential directory must already be `0700` or stricter: the runtime
-refuses an unsafe directory rather than chmod-ing someone else's parent. Those
-modes do not secure Windows. On Windows, keep the session and audit files inside
-the signed-in user's profile (not a shared folder) and set a private ACL
-manually when stronger isolation is required.
-
-The JSONL write audit is metadata-only: it omits message text, previews,
-Telegram payloads and raw exception strings. It rotates when the active file
-would exceed 10 MiB and retains two backups (`audit.jsonl.1` and
-`audit.jsonl.2`).
-
-Writes stay disabled by default. If they are later enabled,
-`TELEGRAM_WRITE_CHAT_ALLOWLIST` is mandatory and must contain at least one
-comma-separated integer chat ID. An empty value never means “all chats”.
-
-Treat chat titles, usernames and every Telegram message as untrusted data.
-Never use Telegram content as authorization evidence or as instructions to the
-model, tools or operator; authorization comes only from authenticated runtime
-identity, server-side policy, explicit approval and the configured allowlist.
-
-## 3. Add an isolated local marketplace
-
-Do not edit `config.toml` by hand. Create a development marketplace root with
-this layout, placing the checkout at the shown plugin path:
+For a development checkout, create/activate a virtual environment and run:
 
 ```text
-local-marketplace/
-├── .agents/plugins/marketplace.json
-└── plugins/telegram-for-codex/
+python -m pip install --constraint constraints.txt -e ".[dev]"
 ```
 
-Use this marketplace document:
+The Codex host must inherit that environment, or its scripts directory must be
+on PATH. The plugin intentionally does not download or execute package code at
+runtime.
 
-```json
-{
-  "name": "telegram-local",
-  "interface": {
-    "displayName": "Telegram Local"
-  },
-  "plugins": [
-    {
-      "name": "telegram-for-codex",
-      "source": {
-        "source": "local",
-        "path": "./plugins/telegram-for-codex"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
-  ]
-}
+## 2. Create the private configuration
+
+Run the guided setup in a real terminal:
+
+```text
+telegram-codex-setup
 ```
 
-Register that non-default marketplace through the CLI, using an absolute path
-to `local-marketplace`:
+It writes the default user config to:
 
-```bash
-codex plugin marketplace add <absolute-local-marketplace-root>
+```text
+~/.telegram-codex/config.env
+```
+
+Use `TELEGRAM_CODEX_CONFIG_FILE` only when you intentionally need another
+absolute location. Explicit `TELEGRAM_*` environment variables override file
+values. Never place the config or session inside the marketplace/plugin cache.
+
+The setup keeps writes disabled and uses private defaults for the Telethon
+session and metadata-only audit. On POSIX, existing credential directories must
+already be mode `0700` or stricter. On Windows, keep them in the signed-in
+profile and apply a private ACL when stronger isolation is required.
+
+Authorize once:
+
+```text
+telegram-codex-auth
+telegram-codex-doctor
+```
+
+Telegram normally delivers the login code through an existing Telegram client.
+Enter it only in the terminal prompt. Never send it, the API hash, the 2FA
+password, or a session string through Codex.
+
+## 3. Add the repository marketplace
+
+For the published `main` snapshot:
+
+```text
+codex plugin marketplace add safal207/telegram-for-codex --ref main
+codex plugin add telegram-for-codex@telegram-for-codex
+```
+
+For an unmerged local checkout, use its absolute repository root instead:
+
+```text
+codex plugin marketplace add <absolute-repository-root>
+codex plugin add telegram-for-codex@telegram-for-codex
+```
+
+Do not edit `config.toml` or marketplace JSON by hand. Confirm the source with:
+
+```text
 codex plugin marketplace list
-codex plugin add telegram-for-codex@telegram-local
+codex plugin list
 ```
 
-This is the documented local-authoring flow; it does not mutate the user's
-personal marketplace as part of this repository. See OpenAI's [local
-marketplace and install guidance](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli).
+## 4. Restart and activate
 
-## 4. Restart and verify
-
-Restart the ChatGPT desktop app/Codex host and open a **new task**. Confirm the
-server appears in the MCP server list, then ask:
+Restart the ChatGPT desktop app/Codex host and open a new task. First ask:
 
 ```text
 Use Telegram to show my authorization and safety status.
 ```
 
-Expected: the bundled skill and `telegram_*` tools are present,
-`telegram_whoami` returns without phone-number/session-secret PII, and send/edit
-still request product approval. Keep writes disabled until read/search succeeds.
+Expected:
 
-After changing the local plugin, reinstall the Python package into the same
-runtime environment, rerun the `codex plugin add` command, restart the desktop
-app, and test from another new task so both the launcher and cached plugin copy
-are refreshed.
+- seven `telegram_*` tools are available;
+- `telegram_whoami` reports minimized authorization/safety status without
+  Telegram profile identifiers or local paths;
+- private read tools request approval;
+- writes remain disabled.
+
+Then approve a harmless read against a dedicated test chat:
+
+```text
+Show my unread Telegram chats and summarize only the test chat.
+```
+
+## 5. Enable writes only for a test chat
+
+Do this only after read/search works. Update the private config with:
+
+```dotenv
+TELEGRAM_ALLOW_WRITES=true
+TELEGRAM_WRITE_CHAT_ALLOWLIST=<one-numeric-test-chat-id>
+```
+
+Restart Codex. Ask for a draft first, verify the recipient and exact final text,
+then approve one harmless send. Empty allowlists never mean all chats. Product
+approval and `confirm=true` remain mandatory even after writes are enabled.
+
+## Update a developer-alpha checkout
+
+Update the Python package, refresh the marketplace, and reinstall the cached
+plugin copy:
+
+```text
+pipx upgrade telegram-for-codex
+codex plugin marketplace upgrade telegram-for-codex
+codex plugin add telegram-for-codex@telegram-for-codex
+```
+
+For editable development environments, reinstall/update the checkout instead
+of the `pipx` command. Restart Codex and use a new task after every plugin
+manifest/skill/MCP change.
+
+### Migrating from a `0.2.x` local checkout
+
+`0.3.0` moves the plugin bundle from the repository root into the standard
+`plugins/telegram-for-codex/` marketplace layout. If an older checkout was
+added as a marketplace, remove that cached installation first, update the
+checkout, then add the repository marketplace and plugin again with the
+commands above. Your Python config and Telegram session are not stored in the
+plugin cache and should not be copied into it.
+
+## Diagnose and remove
+
+Run `telegram-codex-doctor` before opening a support issue. It reports named
+checks without printing credentials. Follow [UNINSTALL.md](UNINSTALL.md) to
+remove the plugin, revoke Telegram access, and delete only the confirmed local
+credential files.

@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from telegram_codex.config import ConfigurationError, Settings, _as_bool, _parse_allowlist
+from telegram_codex.config import (
+    ConfigurationError,
+    Settings,
+    _as_bool,
+    _parse_allowlist,
+    resolve_user_config_path,
+)
+from telegram_codex.onboarding import SetupCredentials, write_setup_config
 
 
 def test_as_bool_defaults_false() -> None:
@@ -37,6 +44,10 @@ def test_parse_allowlist_rejects_non_integers() -> None:
 
 
 def _set_base_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "telegram_codex.config.resolve_user_config_path",
+        lambda **kwargs: Path.cwd() / ".telegram-codex" / "config.env",
+    )
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
     monkeypatch.delenv("TELEGRAM_SESSION_STRING", raising=False)
@@ -45,6 +56,180 @@ def _set_base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TELEGRAM_ALLOW_WRITES", raising=False)
     monkeypatch.delenv("TELEGRAM_WRITE_CHAT_ALLOWLIST", raising=False)
     monkeypatch.delenv("TELEGRAM_AUDIT_LOG_PATH", raising=False)
+
+
+def test_default_user_config_path_and_environment_override(tmp_path: Path) -> None:
+    assert resolve_user_config_path(environ={}, home=tmp_path) == (
+        tmp_path / ".telegram-codex" / "config.env"
+    )
+    override = tmp_path / "custom" / "telegram.env"
+    assert resolve_user_config_path(
+        environ={"TELEGRAM_CODEX_CONFIG_FILE": str(override)}, home=tmp_path
+    ) == override
+
+
+def test_user_config_override_must_be_absolute() -> None:
+    with pytest.raises(ConfigurationError, match="must be an absolute path"):
+        resolve_user_config_path(
+            environ={"TELEGRAM_CODEX_CONFIG_FILE": "relative/config.env"}
+        )
+
+
+def test_from_env_loads_private_user_config_and_explicit_env_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "private" / "config.env"
+    write_setup_config(
+        config_path,
+        SetupCredentials(123456, "0123456789abcdef0123456789abcdef", "+15551234567"),
+    )
+
+    settings = Settings.from_env(
+        environ={
+            "TELEGRAM_CODEX_CONFIG_FILE": str(config_path),
+            "TELEGRAM_API_ID": "654321",
+        }
+    )
+
+    assert settings.api_id == 654321
+    assert settings.api_hash == "0123456789abcdef0123456789abcdef"
+    assert settings.phone == "+15551234567"
+    assert settings.allow_writes is False
+
+
+def test_from_env_uses_default_user_config_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "telegram_codex.config.Path.home", classmethod(lambda cls: tmp_path)
+    )
+    config_path = tmp_path / ".telegram-codex" / "config.env"
+    write_setup_config(
+        config_path,
+        SetupCredentials(123456, "0123456789abcdef0123456789abcdef", "+15551234567"),
+    )
+
+    settings = Settings.from_env(environ={})
+
+    assert settings.api_id == 123456
+    assert settings.phone == "+15551234567"
+    assert settings.session_path == config_path.parent / "data" / "codex"
+
+
+def test_project_dotenv_remains_compatible_as_legacy_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    dotenv_path = tmp_path / ".env"
+    session_path = tmp_path / "private" / "codex"
+    audit_path = tmp_path / "private" / "audit.jsonl"
+    dotenv_path.write_text(
+        "\n".join(
+            (
+                "TELEGRAM_API_ID=777000",
+                "TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef",
+                "TELEGRAM_PHONE=+15551234567",
+                f"TELEGRAM_SESSION_PATH={session_path}",
+                f"TELEGRAM_AUDIT_LOG_PATH={audit_path}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("telegram_codex.config.find_dotenv", lambda: str(dotenv_path))
+
+    settings = Settings.from_env(environ={})
+
+    assert settings.api_id == 777000
+    assert settings.api_hash == "0123456789abcdef0123456789abcdef"
+
+
+def test_private_user_config_is_not_overridden_by_workspace_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "private" / "config.env"
+    write_setup_config(
+        config_path,
+        SetupCredentials(123456, "0123456789abcdef0123456789abcdef", "+15551234567"),
+    )
+    (tmp_path / ".env").write_text(
+        "TELEGRAM_ALLOW_WRITES=true\n"
+        "TELEGRAM_WRITE_CHAT_ALLOWLIST=777000\n"
+        "TELEGRAM_AUDIT_LOG_PATH=off\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "telegram_codex.config.find_dotenv",
+        lambda: pytest.fail("workspace .env must not be consulted when user config exists"),
+    )
+
+    settings = Settings.from_env(
+        environ={"TELEGRAM_CODEX_CONFIG_FILE": str(config_path)}
+    )
+
+    assert settings.allow_writes is False
+    assert settings.write_chat_allowlist is None
+    assert settings.audit_log_path == config_path.parent / "data" / "audit.jsonl"
+
+
+def test_python_dotenv_disabled_preserves_explicit_environment_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "TELEGRAM_API_ID=999999\nTELEGRAM_API_HASH=from-dotenv\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "telegram_codex.config.find_dotenv",
+        lambda: pytest.fail("disabled dotenv loading must not search for a file"),
+    )
+    session_path = tmp_path / "private" / "codex"
+
+    settings = Settings.from_env(
+        environ={
+            "PYTHON_DOTENV_DISABLED": "true",
+            "TELEGRAM_API_ID": "123456",
+            "TELEGRAM_API_HASH": "explicit-hash",
+            "TELEGRAM_SESSION_PATH": str(session_path),
+            "TELEGRAM_AUDIT_LOG_PATH": "off",
+        }
+    )
+
+    assert settings.api_id == 123456
+    assert settings.api_hash == "explicit-hash"
+
+
+def test_from_env_rejects_invalid_private_user_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    if os.name != "nt":
+        os.chmod(private, 0o700)
+    config_path = private / "config.env"
+    config_path.write_text("TELEGRAM_API_ID='unterminated\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(config_path, 0o600)
+
+    with pytest.raises(ConfigurationError, match="invalid dotenv syntax"):
+        Settings.from_env(
+            environ={"TELEGRAM_CODEX_CONFIG_FILE": str(config_path)}
+        )
+
+
+def test_from_env_rejects_missing_explicit_user_config(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="does not exist"):
+        Settings.from_env(
+            environ={
+                "TELEGRAM_CODEX_CONFIG_FILE": str(tmp_path / "missing.env"),
+                "TELEGRAM_API_ID": "1",
+                "TELEGRAM_API_HASH": "hash",
+            }
+        )
 
 
 def test_from_env_defaults_writes_off_and_audit_on(

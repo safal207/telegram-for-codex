@@ -40,11 +40,16 @@ jobs:
           python -m compileall -q src tests
           python -c "import telegram_codex.server, telegram_codex.remote_server"
           command -v telegram-codex
+          command -v telegram-codex-setup
+          command -v telegram-codex-doctor
+          telegram-codex-setup --help > /dev/null
+          telegram-codex-doctor --help > /dev/null
       - name: Validate plugin manifests
         run: |
-          python -m json.tool .codex-plugin/plugin.json > /dev/null
-          python -m json.tool .mcp.json > /dev/null
-          python -c "import json; from pathlib import Path; root=Path('.'); manifest=json.loads((root/'.codex-plugin/plugin.json').read_text()); mcp=json.loads((root/'.mcp.json').read_text()); server=mcp['mcpServers']['telegram']; tools=server['tools']; reads=('telegram_whoami','telegram_audit_log','telegram_list_chats','telegram_get_messages','telegram_search_messages'); assert manifest['name']=='telegram-for-codex'; assert manifest['version']=='0.2.1'; assert manifest['mcpServers']=='./.mcp.json'; assert 'apps' not in manifest; assert server['command']=='telegram-codex'; assert server['default_tools_approval_mode']=='prompt'; assert all(tools[name]['approval_mode']=='auto' for name in reads); assert tools['telegram_send_message']['approval_mode']=='prompt'; assert tools['telegram_edit_message']['approval_mode']=='prompt'"
+          python -m json.tool .agents/plugins/marketplace.json > /dev/null
+          python -m json.tool plugins/telegram-for-codex/.codex-plugin/plugin.json > /dev/null
+          python -m json.tool plugins/telegram-for-codex/.mcp.json > /dev/null
+          python -c "import json; from importlib.metadata import version; from pathlib import Path; root=Path('.'); plugin=root/'plugins/telegram-for-codex'; marketplace=json.loads((root/'.agents/plugins/marketplace.json').read_text()); manifest=json.loads((plugin/'.codex-plugin/plugin.json').read_text()); mcp=json.loads((plugin/'.mcp.json').read_text()); entry=marketplace['plugins'][0]; server=mcp['mcpServers']['telegram']; tools=server['tools']; private_reads=('telegram_audit_log','telegram_list_chats','telegram_get_messages','telegram_search_messages'); assert marketplace['name']=='telegram-for-codex'; assert entry['name']=='telegram-for-codex'; assert entry['source']=={'source':'local','path':'./plugins/telegram-for-codex'}; assert manifest['name']=='telegram-for-codex'; assert manifest['version']==version('telegram-for-codex'); assert manifest['mcpServers']=='./.mcp.json'; assert 'apps' not in manifest; assert server['command']=='telegram-codex'; assert server['default_tools_approval_mode']=='prompt'; assert tools['telegram_whoami']['approval_mode']=='auto'; assert all(tools[name]['approval_mode']=='prompt' for name in private_reads); assert tools['telegram_send_message']['approval_mode']=='prompt'; assert tools['telegram_edit_message']['approval_mode']=='prompt'"
       - name: Test
         run: pytest -q
 

@@ -4,6 +4,7 @@
       "cwd": ".",
       "command": "telegram-codex",
       "env_vars": [
+        "TELEGRAM_CODEX_CONFIG_FILE",
         "TELEGRAM_API_ID",
         "TELEGRAM_API_HASH",
         "TELEGRAM_PHONE",
@@ -20,16 +21,16 @@
           "approval_mode": "auto"
         },
         "telegram_audit_log": {
-          "approval_mode": "auto"
+          "approval_mode": "prompt"
         },
         "telegram_list_chats": {
-          "approval_mode": "auto"
+          "approval_mode": "prompt"
         },
         "telegram_get_messages": {
-          "approval_mode": "auto"
+          "approval_mode": "prompt"
         },
         "telegram_search_messages": {
-          "approval_mode": "auto"
+          "approval_mode": "prompt"
         },
         "telegram_send_message": {
           "approval_mode": "prompt"

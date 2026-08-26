@@ -1,0 +1,31 @@
+{
+  "name": "telegram-for-codex",
+  "version": "0.3.0",
+  "description": "Private, local Telegram inbox access for Codex.",
+  "author": {
+    "name": "Aleksey Safonov",
+    "url": "https://github.com/safal207"
+  },
+  "homepage": "https://github.com/safal207/telegram-for-codex",
+  "repository": "https://github.com/safal207/telegram-for-codex",
+  "license": "MIT",
+  "keywords": ["telegram", "inbox", "messaging", "productivity", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Telegram for Codex",
+    "shortDescription": "Private Telegram inbox for Codex",
+    "longDescription": "Read unread chats, search Telegram history, and draft replies through a local connector. Sending and editing stay disabled until explicitly enabled and approved.",
+    "developerName": "Aleksey Safonov",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/safal207/telegram-for-codex",
+    "privacyPolicyURL": "https://github.com/safal207/telegram-for-codex/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/safal207/telegram-for-codex/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Show my unread Telegram chats.",
+      "Find my recent Telegram conversation about this project.",
+      "Draft a reply to my latest Telegram message; do not send it."
+    ]
+  }
+}

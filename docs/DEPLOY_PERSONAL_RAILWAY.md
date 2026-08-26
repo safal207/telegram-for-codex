@@ -18,7 +18,7 @@ For this first real acceptance run, use `TELEGRAM_MCP_AUTH_MODE=static`. Static 
 
 1. Create a Railway project.
 2. Add a service from GitHub repo `safal207/telegram-for-codex`.
-3. Select the release branch containing v0.2.1 (normally `main` after merge).
+3. Select the release branch containing v0.3.0 (normally `main` after merge).
 4. Railway should detect the root `Dockerfile` automatically.
 5. Generate a public HTTPS domain for the service.
 6. Keep the service at **one replica** for Personal Mode.

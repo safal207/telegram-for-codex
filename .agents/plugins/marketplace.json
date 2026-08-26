@@ -1,0 +1,20 @@
+{
+  "name": "telegram-for-codex",
+  "interface": {
+    "displayName": "Telegram for Codex"
+  },
+  "plugins": [
+    {
+      "name": "telegram-for-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/telegram-for-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

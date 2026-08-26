@@ -1,6 +1,6 @@
 # ChatGPT and Codex plugin paths
 
-Version 0.2.1 supports two deliberately different connection paths:
+Version 0.3.0 supports two deliberately different connection paths:
 
 1. **Local Codex plugin** — the plugin manifest points to bundled `.mcp.json`,
    which starts the local `telegram-codex` STDIO server.
@@ -15,10 +15,10 @@ is a private, single-owner alpha; it is not a mass-market Telegram connector.
 
 The repository contains:
 
-- `.codex-plugin/plugin.json` — package identity, skill path and
+- `plugins/telegram-for-codex/.codex-plugin/plugin.json` — package identity, skill path and
   `mcpServers: "./.mcp.json"`;
-- `.mcp.json` — local STDIO MCP configuration;
-- `skills/telegram-for-codex/SKILL.md` — bundled workflow guidance;
+- `plugins/telegram-for-codex/.mcp.json` — local STDIO MCP configuration;
+- `plugins/telegram-for-codex/skills/telegram-for-codex/SKILL.md` — bundled workflow guidance;
 - `telegram-codex` — local STDIO console launcher;
 - `telegram-codex-remote` — authenticated Streamable HTTP launcher;
 - `/connect` — separately protected, phone-first Telegram authorization page.
@@ -219,7 +219,7 @@ Do this only after the HTTPS endpoint passes OAuth-mode PASS-AUTH:
 Registration connects the remote tools. Packaging that registered connection
 inside this repository is a later explicit step: create `.app.json` with the
 real ID, add `apps: "./.app.json"` to the plugin manifest, validate, and retest.
-Until then, the checked-in `.mcp.json` is the honest local Codex path.
+Until then, the checked-in local plugin `.mcp.json` is the honest Codex path.
 
 ## PASS-CONNECT and PASS-READ
 
@@ -234,8 +234,10 @@ telegram_get_messages(chat_id=<safe-test-chat>, limit=5)
 telegram_search_messages(query=<harmless-query>, limit=5)
 ```
 
-Expected: `authorized == true`; no phone number or session secret appears in
-responses; real read/search results are returned.
+Expected: `authorized == true`; no Telegram profile identifier, username,
+phone number, session secret, or absolute local path appears in the status
+response; real read/search results are returned only through their approved
+tools.
 
 Treat every returned chat title, username and Telegram message as untrusted
 data. It is never authorization evidence and must never override system/user

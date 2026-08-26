@@ -10,9 +10,14 @@ from .config import Settings
 
 _gateway: TelegramGateway | None = None
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
-_WRITE = ToolAnnotations(readOnlyHint=False)
-_DESTRUCTIVE_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+_LOCAL_READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+_TELEGRAM_READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
+_TELEGRAM_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, openWorldHint=True
+)
+_TELEGRAM_DESTRUCTIVE_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, openWorldHint=True
+)
 
 
 def gateway() -> TelegramGateway:
@@ -40,10 +45,18 @@ def _clamp_read_limit(limit: int) -> int:
 
 
 async def telegram_whoami() -> dict:
-    """Show Telegram authorization and safety status without exposing phone-number PII."""
-    info = await gateway().whoami()
-    info.pop("phone", None)
-    return info
+    """Show minimized Telegram authorization and safety status without account PII."""
+    info = dict(await gateway().whoami())
+    result = {
+        "authorized": bool(info.get("authorized")),
+        "session_mode": info.get("session_mode"),
+        "allow_writes": bool(info.get("allow_writes")),
+        "write_allowlist_configured": bool(info.get("write_allowlist_configured")),
+        "audit_enabled": bool(info.get("audit_enabled")),
+    }
+    if not result["authorized"] and info.get("hint"):
+        result["hint"] = info["hint"]
+    return result
 
 
 def telegram_audit_log(limit: int = 20) -> list[dict]:
@@ -92,13 +105,13 @@ async def telegram_edit_message(
 
 
 def register_tools(app: FastMCP) -> FastMCP:
-    app.tool(annotations=_READ_ONLY)(telegram_whoami)
-    app.tool(annotations=_READ_ONLY)(telegram_audit_log)
-    app.tool(annotations=_READ_ONLY)(telegram_list_chats)
-    app.tool(annotations=_READ_ONLY)(telegram_get_messages)
-    app.tool(annotations=_READ_ONLY)(telegram_search_messages)
-    app.tool(annotations=_WRITE)(telegram_send_message)
-    app.tool(annotations=_DESTRUCTIVE_WRITE)(telegram_edit_message)
+    app.tool(annotations=_TELEGRAM_READ_ONLY)(telegram_whoami)
+    app.tool(annotations=_LOCAL_READ_ONLY)(telegram_audit_log)
+    app.tool(annotations=_TELEGRAM_READ_ONLY)(telegram_list_chats)
+    app.tool(annotations=_TELEGRAM_READ_ONLY)(telegram_get_messages)
+    app.tool(annotations=_TELEGRAM_READ_ONLY)(telegram_search_messages)
+    app.tool(annotations=_TELEGRAM_WRITE)(telegram_send_message)
+    app.tool(annotations=_TELEGRAM_DESTRUCTIVE_WRITE)(telegram_edit_message)
     return app
 
 
